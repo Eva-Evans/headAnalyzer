@@ -1,0 +1,7 @@
+streamlit
+pandas
+sqlalchemy
+psycopg2-binary
+openpyxl
+python-dateutil
+xlrd>=2.0.1
