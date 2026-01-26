@@ -84,7 +84,6 @@ def capacity_name_for_indicator(indicator: str) -> Optional[str]:
         return "Нетели"
     return None
 
-
 def get_max_event_date_from_db() -> date:
     q = """
     SELECT
@@ -222,6 +221,66 @@ def make_excel_bytes(forecast_df: pd.DataFrame, realization_df: pd.DataFrame) ->
 # -----------------------------
 # params from DB
 # -----------------------------
+@st.cache_data(show_spinner=False)
+def _compute_params_cached(db_signature: str) -> Dict[str, Any]:
+    # db_signature нужен только чтобы кэш инвалидировался при изменении данных
+    return compute_params_from_db()
+
+
+def _get_db_signature() -> str:
+    """
+    Быстрый “отпечаток” данных в БД: max(event_date) + counts.
+    Если данные обновились — подпись изменится — кэш пересчитается.
+    """
+    q = """
+    SELECT
+      COALESCE((SELECT MAX(event_date)::text FROM calvings_births_raw), '') AS calv_max,
+      COALESCE((SELECT MAX(event_date)::text FROM inseminations_raw), '') AS ins_max,
+      COALESCE((SELECT MAX(event_date)::text FROM dryoff_raw), '') AS dry_max,
+      COALESCE((SELECT MAX(event_date)::text FROM disposals_raw), '') AS disp_max,
+
+      (SELECT COUNT(*) FROM calvings_births_raw) AS calv_n,
+      (SELECT COUNT(*) FROM inseminations_raw) AS ins_n,
+      (SELECT COUNT(*) FROM dryoff_raw) AS dry_n,
+      (SELECT COUNT(*) FROM disposals_raw) AS disp_n
+    ;
+    """
+    try:
+        df = pd.read_sql(q, con=engine)
+        r = df.iloc[0].to_dict()
+        # строка-подпись
+        return f"{r['calv_max']}|{r['ins_max']}|{r['dry_max']}|{r['disp_max']}|{r['calv_n']}|{r['ins_n']}|{r['dry_n']}|{r['disp_n']}"
+    except Exception:
+        return "no-db"
+
+
+def ensure_params_loaded_from_db_silent() -> None:
+    """
+    Тихо подгружает параметры из БД (через кэш), если их ещё нет в session_state.
+    Никаких st.info тут нет => не будет сообщения каждый запуск.
+    """
+    if "computed_params" in st.session_state and isinstance(st.session_state.computed_params, dict):
+        return
+
+    sig = _get_db_signature()
+
+    # если данных реально нет (все count = 0), ничего не делаем — остаёмся на дефолтах
+    if sig != "no-db":
+        parts = sig.split("|")
+        if len(parts) >= 8:
+            try:
+                calv_n, ins_n, dry_n, disp_n = map(int, parts[-4:])
+                if (calv_n + ins_n + dry_n + disp_n) == 0:
+                    return
+            except Exception:
+                pass
+
+    try:
+        st.session_state.computed_params = _compute_params_cached(sig)
+    except Exception:
+        # если БД пуста/сломана — просто остаёмся на дефолтах
+        return
+
 def compute_params_from_db() -> Dict[str, Any]:
     calv = pd.read_sql(
         "SELECT reg, mother_reg, birth_date, sex, event_type, event_date FROM calvings_births_raw",
@@ -804,12 +863,14 @@ st.subheader("3) Параметры модели")
 cA, cB, cC = st.columns([1, 1, 2])
 with cA:
     if st.button("Пересчитать параметры из БД", use_container_width=True, key="btn_recalc_params_db"):
+        # recompute params (invalidate cache because DB changed)
         try:
-            with st.spinner("Пересчитываю параметры из БД..."):
-                st.session_state.computed_params = compute_params_from_db()
-            st.success("Параметры обновлены из БД.")
+            _compute_params_cached.clear()
+            st.session_state.computed_params = _compute_params_cached(_get_db_signature())
         except Exception as e:
-            st.error(f"Не удалось пересчитать параметры из БД: {e}")
+            st.error(f"Не удалось пересчитать параметры из данных: {e}")
+            st.stop()
+
 with cB:
     if st.button("Сбросить кэш", use_container_width=True, key="btn_clear_cache"):
         st.cache_data.clear()
@@ -823,6 +884,7 @@ if "computed_params" not in st.session_state:
     except Exception:
         # если БД пустая/не готова — остаёмся на дефолтах
         pass
+ensure_params_loaded_from_db_silent()
 
 base_params = get_param_source()
 final_params_for_forecast = _apply_admin_overrides(base_params)
@@ -1069,7 +1131,7 @@ if calculate:
         for i, d_end in enumerate(month_ends, start=1):
             try:
                 # НОВОЕ: передаём Timestamp, чтобы не ловить dtype=datetime64 vs date
-                vals = compute_forecast_from_db(pd.Timestamp(d_end), overrides=final_params_for_forecast)
+                vals = compute_forecast_from_db(d_end, overrides=final_params_for_forecast)
             except Exception as e:
                 st.error(f"Ошибка расчёта на {d_end.strftime('%Y-%m')}: {e}")
                 vals = {}
@@ -1102,30 +1164,29 @@ if calculate:
     }
 
     def style_forecast(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Красим ячейки прогноза, которые превышают вместимость mp.HERD_CAPACITY.
+        Ярко-красный фон + белый жирный текст (хорошо видно на тёмной теме).
+        """
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
 
-        # 1) если фактически > вместимости — ярко красим
         for col in df.columns:
-            cap_key = capacity_name_for_indicator(col)
+            cap_key = capacity_name_for_indicator(str(col))
             cap = mp.HERD_CAPACITY.get(cap_key) if cap_key else None
             if cap is None:
                 continue
+
             vals = pd.to_numeric(df[col], errors="coerce")
             mask = vals.notna() & (vals > float(cap))
-            styles.loc[mask, col] = "background-color:#ff0000;color:white"
 
-        # 2) если модель считает "переполнение" (т.е. нужно продавать) — красим в прогнозе (помягче)
-        for ind_col, ov_col in indicator_to_overflow.items():
-            if ind_col not in df.columns or ov_col not in real_df.columns:
-                continue
-            ov = pd.to_numeric(real_df[ov_col], errors="coerce").fillna(0.0)
-            mask = ov > 0.0
-            # не перебиваем ярко-красное (если уже стоит)
-            for idx in df.index[mask]:
-                if "background-color:#ff0000" not in styles.loc[idx, ind_col]:
-                    styles.loc[idx, ind_col] = "background-color:#ffcccc"
+            styles.loc[mask, col] = (
+                "background-color: rgba(255, 0, 0, 1) !important;"
+                "color: #ffffff !important;"
+                "font-weight: 800 !important;"
+            )
 
         return styles
+
 
     st.subheader("Прогноз (красным подсвечены месяцы, где начинается переполнение по местам)")
     st.dataframe(result.style.apply(style_forecast, axis=None), use_container_width=True)
@@ -1137,6 +1198,8 @@ if calculate:
 
     with st.expander("Подробно: переполнение по группам (для проверки логики)", expanded=False):
         overflow_cols = [c for c in real_df.columns if c.startswith("Переполнение:")]
+        real_df = real_df.reindex(columns=REALIZATION_COLS)
+        st.dataframe(real_df, use_container_width=True)
         if overflow_cols:
             st.dataframe(real_df[overflow_cols], use_container_width=True)
         else:

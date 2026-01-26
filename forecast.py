@@ -10,6 +10,22 @@ import model_params as mp
 
 # важно: этот импорт должен начать работать после шага (2)
 from forecast_dynamic import compute_forecast_dynamic_from_db
+import pandas as pd
+from datetime import date, datetime
+
+def _to_ts(x) -> pd.Timestamp:
+    """
+    Приводит любые date/datetime/Timestamp/строку к pd.Timestamp (normalized to 00:00:00).
+    """
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return pd.NaT
+    if isinstance(x, pd.Timestamp):
+        return x.normalize()
+    if isinstance(x, datetime):
+        return pd.Timestamp(x).normalize()
+    if isinstance(x, date):
+        return pd.Timestamp(x).normalize()
+    return pd.Timestamp(x).normalize()
 
 
 def _month_start(d_end: date) -> date:
@@ -109,11 +125,32 @@ def _apply_expected_calving_prob_fallback(out: dict, d_end: date, overrides: dic
     out["Ожидаемые тёлочки (условно)"] = float(exp_heifers)
 
 
-def compute_forecast_from_db(target_date: date, overrides: Optional[dict] = None) -> Dict[str, float]:
-    out = compute_forecast_dynamic_from_db(target_date, overrides=overrides)
+from datetime import date
+from typing import Dict, Optional
 
-    # КЛЮЧЕВОЕ: если “ожидаемый отёл” вышел 0 (из-за отсутствия P в нужном месяце),
-    # добиваем фолбэком по всем осеменениям.
-    _apply_expected_calving_prob_fallback(out, target_date, overrides)
+import pandas as pd
+
+
+def compute_forecast_from_db(target_date: date, overrides: Optional[dict] = None) -> Dict[str, float]:
+    """
+    Обёртка над динамическим прогнозом + фолбэк для "ожидаемого отёла".
+    Ключевое: приводим входную дату к pd.Timestamp, чтобы не ловить сравнения Timestamp vs date.
+    """
+    d_end_ts = _to_ts(target_date)
+    if pd.isna(d_end_ts):
+        raise ValueError(f"target_date is invalid: {target_date!r}")
+
+    # 1) основной расчёт (предпочтительно на Timestamp)
+    try:
+        out = compute_forecast_dynamic_from_db(d_end_ts, overrides=overrides)
+    except (TypeError, ValueError):
+        # если внутри compute_forecast_dynamic_from_db ожидают именно datetime.date
+        out = compute_forecast_dynamic_from_db(d_end_ts.date(), overrides=overrides)
+
+    # 2) добивка "ожидаемого отёла" (тоже пытаемся сначала с Timestamp)
+    try:
+        _apply_expected_calving_prob_fallback(out, d_end_ts, overrides)
+    except (TypeError, ValueError):
+        _apply_expected_calving_prob_fallback(out, d_end_ts.date(), overrides)
 
     return out
