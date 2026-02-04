@@ -93,6 +93,73 @@ def _fmt_cell(x: Any) -> Any:
     except Exception:
         return x
 
+def build_early_realization_plan(
+    overflow_df: pd.DataFrame,
+    *,
+    lead_months: int = 2,
+) -> pd.DataFrame:
+    """
+    Ранний план реализации (РЕКОМЕНДАЦИЯ, не влияет на прогноз):
+
+    Если в месяце M ожидается переполнение по коровам,
+    то в месяце M-lead_months рекомендуем продать нетелей (чтобы не вошли в коровы).
+
+    Также если переполнение в группе молодняка/нетелей уже в месяце M —
+    рекомендуем продавать в этом же месяце.
+    """
+    if not isinstance(overflow_df, pd.DataFrame) or overflow_df.empty:
+        return pd.DataFrame()
+
+    # месяцы = индекс overflow_df (строки)
+    months = [str(x) for x in overflow_df.index.tolist()]
+
+    def _get(m: str, col: str) -> float:
+        if col not in overflow_df.columns:
+            return 0.0
+        try:
+            v = pd.to_numeric(overflow_df.loc[m, col], errors="coerce")
+            return float(0.0 if pd.isna(v) else v)
+        except Exception:
+            return 0.0
+
+    plan_cols = [
+        "Рекомендуем продать: нетели (заранее)",
+        "Рекомендуем продать: нетели (в этот месяц)",
+        "Рекомендуем продать: тёлки 9–24 мес",
+        "Рекомендуем продать: тёлки 3–8 мес",
+        "Рекомендуем продать: коровы (крайний случай)",
+    ]
+    plan = pd.DataFrame(0.0, index=months, columns=plan_cols)
+
+    for i, m in enumerate(months):
+        # 1) Переполнение по коровам -> заранее продать нетелей
+        over_cows = _get(m, "Переполнение: Дойные коровы") + _get(m, "Переполнение: Сухостойные коровы")
+        if over_cows > 0:
+            j = i - int(lead_months)
+            if j >= 0:
+                plan.iloc[j, plan.columns.get_loc("Рекомендуем продать: нетели (заранее)")] += over_cows
+            else:
+                # если уже не успеваем "раньше", это крайний случай
+                plan.loc[m, "Рекомендуем продать: коровы (крайний случай)"] += over_cows
+
+        # 2) Переполнение внутри групп -> продавать в этот же месяц
+        ov_heif_03 = _get(m, "Переполнение: Тёлки 0–3 мес")
+        ov_heif_38 = _get(m, "Переполнение: Тёлки 3–8 мес")
+        ov_heif_924 = _get(m, "Переполнение: Тёлки 9–24 мес")
+        ov_heif_preg = _get(m, "Переполнение: Нетели")
+
+        if ov_heif_preg > 0:
+            plan.loc[m, "Рекомендуем продать: нетели (в этот месяц)"] += ov_heif_preg
+        if ov_heif_924 > 0:
+            plan.loc[m, "Рекомендуем продать: тёлки 9–24 мес"] += ov_heif_924
+        if ov_heif_38 > 0:
+            plan.loc[m, "Рекомендуем продать: тёлки 3–8 мес"] += ov_heif_38
+
+        # 0–3 мес обычно не реализуют — но если хочешь, можно добавить отдельную колонку
+
+    # аккуратно подчистим микрозначения
+    plan = plan.where(plan.abs() >= 1e-6, 0.0)
+    return plan
 
 def ensure_month_col(df: pd.DataFrame, month_labels: list[str] | None = None) -> pd.DataFrame:
     if "Месяц" in df.columns:
@@ -221,14 +288,18 @@ def make_excel_bytes_highlight_months_columns(
     forecast_view: pd.DataFrame,   # индикаторы x месяцы
     overflow_view: pd.DataFrame,   # переполнение-группы x месяцы
     indicator_to_overflow: dict[str, str | None],
+    realization_view: pd.DataFrame | None = None,  # ПЛАН реализации: действия x месяцы
 ) -> bytes:
     """
-    Новый Excel под текущий UI:
-    - Прогноз 
-    - Переполнение 
+    Excel под UI:
+    - Прогноз
+    - Переполнение
+    - План реализации (если передан)
+
     Подсветка:
       * Переполнение: любое >0 красным
       * Прогноз: ячейка индикатора красная, если в этом месяце переполнение по группе >0
+      * План реализации: любое >0 красным
     """
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill, Font
@@ -237,6 +308,8 @@ def make_excel_bytes_highlight_months_columns(
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         forecast_view.to_excel(writer, sheet_name="Прогноз ")
         overflow_view.to_excel(writer, sheet_name="Переполнение ")
+        if realization_view is not None and isinstance(realization_view, pd.DataFrame) and not realization_view.empty:
+            realization_view.to_excel(writer, sheet_name="План реализации ")
 
     buf.seek(0)
     wb = load_workbook(buf)
@@ -264,24 +337,11 @@ def make_excel_bytes_highlight_months_columns(
     # Прогноз: красим если переполнение >0
     ws_f = wb["Прогноз "]
 
-    # Заголовки месяцев в прогнозе
-    months = []
-    for c in range(2, ws_f.max_column + 1):
-        months.append(str(ws_f.cell(row=1, column=c).value))
+    months = [str(ws_f.cell(row=1, column=c).value) for c in range(2, ws_f.max_column + 1)]
+    indicators = [str(ws_f.cell(row=r, column=1).value) for r in range(2, ws_f.max_row + 1)]
 
-    # Индикаторы по строкам
-    indicators = []
-    for r in range(2, ws_f.max_row + 1):
-        indicators.append(str(ws_f.cell(row=r, column=1).value))
-
-    # Заголовки в overflow
-    ov_month_to_col = {}
-    for c in range(2, ws_ov.max_column + 1):
-        ov_month_to_col[str(ws_ov.cell(row=1, column=c).value)] = c
-
-    ov_row_by_name = {}
-    for r in range(2, ws_ov.max_row + 1):
-        ov_row_by_name[str(ws_ov.cell(row=r, column=1).value)] = r
+    ov_month_to_col = {str(ws_ov.cell(row=1, column=c).value): c for c in range(2, ws_ov.max_column + 1)}
+    ov_row_by_name = {str(ws_ov.cell(row=r, column=1).value): r for r in range(2, ws_ov.max_row + 1)}
 
     for r_idx, ind in enumerate(indicators, start=2):
         ov_name = indicator_to_overflow.get(ind)
@@ -296,14 +356,21 @@ def make_excel_bytes_highlight_months_columns(
             if not ov_c:
                 continue
             ov_val = ws_ov.cell(row=ov_r, column=ov_c).value
+            cell = ws_f.cell(row=r_idx, column=c_idx)
             if _is_pos(ov_val):
-                cell = ws_f.cell(row=r_idx, column=c_idx)
                 cell.fill = fill
                 cell.font = font
-                if isinstance(cell.value, (int, float)):
-                    cell.number_format = num_fmt
-            else:
-                cell = ws_f.cell(row=r_idx, column=c_idx)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = num_fmt
+
+    # План реализации: красим любое >0
+    if "План реализации " in wb.sheetnames:
+        ws_r = wb["План реализации "]
+        for row in ws_r.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                if _is_pos(cell.value):
+                    cell.fill = fill
+                    cell.font = font
                 if isinstance(cell.value, (int, float)):
                     cell.number_format = num_fmt
 
@@ -1482,6 +1549,33 @@ with tab1:
         st.session_state["last_result_df"] = result_df
         st.session_state["last_overflow_df"] = overflow_df
         st.session_state["last_month_ends"] = month_ends
+            # ----------------------------
+        # ПЛАН РАННЕЙ РЕАЛИЗАЦИИ (UI)
+        # ----------------------------
+        st.subheader("План ранней реализации (рекомендация)")
+
+        lead_months = st.slider(
+            "За сколько месяцев заранее продавать нетелей, если прогноз показывает переполнение по коровам",
+            min_value=0,
+            max_value=6,
+            value=2,
+            step=1,
+            key="realization_lead_months",
+        )
+
+        realization_df = build_early_realization_plan(overflow_df, lead_months=int(lead_months))
+
+        realization_view = realization_df.T  # действия x месяцы (как остальные таблицы)
+        st.dataframe(
+            realization_view.style.format(_fmt_cell).apply(style_positive_red, axis=None),
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Логика простая: если в месяце М ожидается переполнение по коровам, "
+            "то в месяце М-2 (настраивается) рекомендуем продать нетелей, "
+            "чтобы они не вошли в коров и не создали пик."
+        )
 
     # ----------------------------
     # РЕЗУЛЬТАТЫ (месяцы = столбцы)
@@ -1566,7 +1660,9 @@ with tab1:
             forecast_view=forecast_view,
             overflow_view=overflow_view,
             indicator_to_overflow=indicator_to_overflow,
+            realization_view=realization_view,
         )
+
         st.session_state["last_excel_bytes"] = excel_bytes
 
         if isinstance(month_ends, list) and month_ends:

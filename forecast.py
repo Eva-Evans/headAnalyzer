@@ -7,6 +7,24 @@ import pandas as pd
 
 from db import engine
 import model_params as mp
+from calendar import monthrange
+from datetime import date
+
+def _month_bounds(d: date) -> tuple[date, date]:
+    ms = date(d.year, d.month, 1)
+    me = date(d.year, d.month, monthrange(d.year, d.month)[1])
+    return ms, me
+
+def _pop_due(counter, month_start: date, month_end: date) -> float:
+    if not counter:
+        return 0.0
+    due_dates = [dt for dt in counter.keys() if month_start <= dt <= month_end]
+    if not due_dates:
+        return 0.0
+    n = float(sum(counter[dt] for dt in due_dates))
+    for dt in due_dates:
+        del counter[dt]
+    return n
 
 # важно: этот импорт должен начать работать после шага (2)
 from forecast_dynamic import compute_forecast_dynamic_from_db

@@ -446,3 +446,75 @@ def compute_params_from_db() -> RuntimeParams:
         insemination_params=insemination_params,
         meta=meta,
     )
+# params_runtime.py (добавить)
+
+from dataclasses import dataclass
+from datetime import timedelta
+from collections import Counter
+from calendar import monthrange
+
+
+@dataclass
+class PendingCalvings:
+    """Ожидаемые отёлы, уже 'заложенные' до даты старта прогноза."""
+    cows: Counter  # Counter[date] -> count
+    heifers: Counter  # Counter[date] -> count
+    meta: dict
+
+
+def _compute_pending_calvings_from_history(
+    ins: pd.DataFrame,
+    start_date: date,
+    gestation_days: int,
+) -> PendingCalvings:
+    """
+    Берём P-осеменения в окне [start_date - gestation_days, start_date],
+    дедуп по животному (берём последнее P), считаем due_date = ai_date + gestation_days.
+    """
+    if ins is None or ins.empty:
+        return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
+
+    df = ins.copy()
+    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date
+    df["result_norm"] = df["result"].apply(norm_result)
+    df["reg_s"] = df["reg"].apply(norm_id)
+    df["lact_n"] = pd.to_numeric(df.get("lact", 0), errors="coerce").fillna(0).astype(int)
+
+    df = df[(df["reg_s"] != "") & (df["event_date"].notna()) & (df["result_norm"] == "P")].copy()
+    if df.empty:
+        return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
+
+    window_start = start_date - timedelta(days=int(gestation_days))
+    df = df[(df["event_date"] >= window_start) & (df["event_date"] <= start_date)].copy()
+    if df.empty:
+        return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
+
+    # дедуп: 1 беременность на животное => берём последнее P
+    df = df.sort_values(["reg_s", "event_date"], kind="mergesort")
+    df = df.groupby("reg_s", sort=False).tail(1)
+
+    df["due_date"] = df["event_date"].apply(lambda d: d + timedelta(days=int(gestation_days)))
+    # интересуют отёлы после старта прогноза
+    df = df[df["due_date"] >= start_date].copy()
+    if df.empty:
+        return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
+
+    cows_due = df[df["lact_n"] > 0]["due_date"].tolist()
+    heifers_due = df[df["lact_n"] <= 0]["due_date"].tolist()
+
+    cows = Counter(cows_due)
+    heifers = Counter(heifers_due)
+    meta = {"n_total": int(len(df)), "n_cows": int(len(cows_due)), "n_heifers": int(len(heifers_due))}
+    return PendingCalvings(cows=cows, heifers=heifers, meta=meta)
+
+
+def compute_pending_calvings_from_db(
+    start_date: date,
+    gestation_days: int | None = None,
+) -> PendingCalvings:
+    """
+    Публичная функция: посчитать pending calvings из БД на дату старта прогноза.
+    """
+    g = int(round(float(gestation_days if gestation_days is not None else DEFAULT_GESTATION_DAYS)))
+    ins = pd.read_sql("SELECT reg, lact, event_date, result FROM inseminations_raw", con=engine)
+    return _compute_pending_calvings_from_history(ins, start_date=start_date, gestation_days=g)
