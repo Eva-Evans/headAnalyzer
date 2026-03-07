@@ -1,11 +1,10 @@
-# scripts/compute_model_params.py
 from __future__ import annotations
 
 import pandas as pd
 from db import engine
 
 
-# ---------- Загрузка данных ----------
+                                       
 
 def load_data():
     calv = pd.read_sql("SELECT * FROM calvings_births_raw", con=engine)
@@ -16,28 +15,27 @@ def load_data():
 
 
 def prepare_dates(calv, ins, disp, dry):
-    # Отёлы + родившиеся
+                        
     for col in ["event_date", "birth_date", "disposal_date"]:
         if col in calv.columns:
             calv[col] = pd.to_datetime(calv[col], errors="coerce")
 
-    # Осеменения
+                
     if "event_date" in ins.columns:
         ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce")
 
-    # Выбытия
+             
     for col in ["event_date", "birth_date"]:
         if col in disp.columns:
             disp[col] = pd.to_datetime(disp[col], errors="coerce")
 
-    # Запуски
+             
     if "event_date" in dry.columns:
         dry["event_date"] = pd.to_datetime(dry["event_date"], errors="coerce")
 
     return calv, ins, disp, dry
 
 
-# ---------- helpers ----------
 
 def _norm_event_type(x: object) -> str:
     return (
@@ -63,7 +61,6 @@ def _lact_cat(x) -> int | None:
     return 4
 
 
-# ---------- Стельность (DIM / возраст) ----------
 
 def compute_conception_params(ins: pd.DataFrame):
     """
@@ -94,7 +91,7 @@ def compute_conception_params(ins: pd.DataFrame):
         print("НЕТ плодотворных осеменений (Result = 'P')")
         return None
 
-    # делим на коров и тёлок
+                            
     df["lact_num"] = pd.to_numeric(df["lact"], errors="coerce").fillna(0)
     cows = df[df["lact_num"] > 0].copy()
     heifers = df[df["lact_num"] <= 0].copy()
@@ -129,7 +126,7 @@ def compute_conception_params(ins: pd.DataFrame):
     }
 
 
-# ---------- Длительность стельности (осеменение -> отёл) ----------
+                                                                    
 
 def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
     """
@@ -164,11 +161,9 @@ def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
         print("ОШИБКА: в inseminations_raw не хватает колонок:", missing)
         return None
 
-    # --- нормализуем даты (важно: делаем datetime64[ns]) ---
     df_calv["event_date"] = pd.to_datetime(df_calv["event_date"], errors="coerce")
     df_ins["event_date"] = pd.to_datetime(df_ins["event_date"], errors="coerce")
 
-    # --- телята: только РОЖДЕН + есть mother_reg ---
     df_calv["event_type_norm"] = df_calv["event_type"].apply(_norm_event_type)
 
     calves = df_calv[
@@ -181,20 +176,17 @@ def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
         print("Нет строк 'РОЖДЕН' с заполненным mother_reg")
         return None
 
-    # mother_reg -> numeric -> int64
     calves["mother_reg"] = pd.to_numeric(calves["mother_reg"], errors="coerce")
     calves = calves[calves["mother_reg"].notna()].copy()
     calves["mother_reg"] = calves["mother_reg"].astype("int64")
 
-    # calving_date оставляем datetime64[ns] (не .dt.date!)
     calves["calving_date"] = pd.to_datetime(calves["event_date"], errors="coerce")
     calves = calves[calves["calving_date"].notna()].copy()
 
-    # двойни/тройни: уникальный отёл матери по дате
+                                                   
     calves = calves.drop_duplicates(subset=["mother_reg", "calving_date"])
     calves = calves[["mother_reg", "calving_date"]].copy()
 
-    # --- P-осеменения ---
     df_ins["result_norm"] = df_ins["result"].astype(str).str.strip().str.upper()
     ins_p = df_ins[
         df_ins["event_date"].notna()
@@ -215,13 +207,11 @@ def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
 
     ins_p = ins_p[["mother_reg", "ins_date"]].copy()
 
-    # --- сортировка (обязательно) ---
-    # для merge_asof: данные должны быть отсортированы по ключу on (дате),
-    # а внутри одинаковых дат — стабильный порядок.
+                                      
+                                                   
     calves = calves.sort_values(["calving_date", "mother_reg"], kind="mergesort").reset_index(drop=True)
     ins_p = ins_p.sort_values(["ins_date", "mother_reg"], kind="mergesort").reset_index(drop=True)
 
-    # --- merge_asof: последняя P-случка до отёла ---
     pairs = pd.merge_asof(
         calves,
         ins_p,
@@ -239,7 +229,7 @@ def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
 
     pairs["gest_days"] = (pairs["calving_date"] - pairs["ins_date"]).dt.days
 
-    # фильтр разумных сроков
+                            
     pairs = pairs[(pairs["gest_days"] > 200) & (pairs["gest_days"] < 310)]
     if pairs.empty:
         print("После фильтра 200–310 дней нет данных")
@@ -256,7 +246,6 @@ def compute_gestation_params(calv: pd.DataFrame, ins: pd.DataFrame):
 
     return {"avg_gestation_days": float(pairs["gest_days"].mean())}
 
-# ---------- Сухостой (dryoff -> отёл) ----------
 
 def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
     """
@@ -284,7 +273,7 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
     df_calv = calv.copy()
     df_dry = dry.copy()
 
-    # --- проверки колонок ---
+                              
     need_calv = {"mother_reg", "event_date", "event_type"}
     missing_c = need_calv - set(df_calv.columns)
     if missing_c:
@@ -297,11 +286,10 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
         print("ОШИБКА: в dryoff_raw не хватает колонок:", missing_d)
         return None
 
-    # --- нормализуем даты в datetime64[ns] ---
     df_calv["event_date"] = pd.to_datetime(df_calv["event_date"], errors="coerce")
     df_dry["event_date"] = pd.to_datetime(df_dry["event_date"], errors="coerce")
 
-    # --- отёлы коров через телят ---
+                                     
     df_calv["event_type_norm"] = df_calv["event_type"].apply(_norm_event_type)
 
     calves = df_calv[
@@ -319,11 +307,11 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
     calves = calves.dropna(subset=["cow_reg", "calving_date"]).copy()
     calves["cow_reg"] = calves["cow_reg"].astype("int64")
 
-    # двойни/тройни: один отёл коровы на дату
+                                             
     calves = calves.drop_duplicates(subset=["cow_reg", "calving_date"])
     calves = calves[["cow_reg", "calving_date"]].copy()
 
-    # --- запуски коров ---
+                           
     dry_ev = df_dry[
         df_dry["event_date"].notna()
         & df_dry["reg"].notna()
@@ -340,11 +328,10 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
 
     dry_ev = dry_ev[["cow_reg", "dryoff_date"]].copy()
 
-    # --- сортировка для merge_asof: дата первым ключом ---
     calves = calves.sort_values(["calving_date", "cow_reg"], kind="mergesort").reset_index(drop=True)
     dry_ev = dry_ev.sort_values(["dryoff_date", "cow_reg"], kind="mergesort").reset_index(drop=True)
 
-    # --- линкуем: последний запуск до отёла ---
+                                                
     merged = pd.merge_asof(
         calves,
         dry_ev,
@@ -362,7 +349,7 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
 
     merged["dry_days"] = (merged["calving_date"] - merged["dryoff_date"]).dt.days
 
-    # разумные сроки сухостоя (можно подстроить)
+                                                
     merged = merged[(merged["dry_days"] >= 20) & (merged["dry_days"] <= 120)].copy()
     if merged.empty:
         print("После фильтра 20–120 дней нет данных по сухостою")
@@ -383,7 +370,6 @@ def compute_dryoff_params(calv: pd.DataFrame, dry: pd.DataFrame):
         "n": int(len(merged)),
     }
 
-# ---------- Осеменения: сколько попыток до P и интервалы ----------
 
 def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     """
@@ -411,7 +397,7 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     df_calv = calv.copy()
     df_ins = ins.copy()
 
-    # --- проверки ---
+                      
     need_calv = {"mother_reg", "event_date", "event_type"}
     missing_c = need_calv - set(df_calv.columns)
     if missing_c:
@@ -424,11 +410,11 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
         print("ОШИБКА: в inseminations_raw не хватает колонок:", missing_i)
         return None
 
-    # --- нормализация дат ---
+                              
     df_calv["event_date"] = pd.to_datetime(df_calv["event_date"], errors="coerce")
     df_ins["event_date"] = pd.to_datetime(df_ins["event_date"], errors="coerce")
 
-    # --- отёлы коров через телят ---
+                                     
     df_calv["event_type_norm"] = df_calv["event_type"].apply(_norm_event_type)
 
     calvings = df_calv[
@@ -448,7 +434,7 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     calvings = calvings.drop_duplicates(subset=["cow_reg", "calving_date"])
     calvings = calvings[["cow_reg", "calving_date"]].copy()
 
-    # --- осеменения ---
+                        
     df_ins["result_norm"] = df_ins["result"].astype(str).str.strip().str.upper()
     df_ins["lact"] = pd.to_numeric(df_ins["lact"], errors="coerce")
     df_ins["dim_age"] = pd.to_numeric(df_ins["dim_age"], errors="coerce")
@@ -471,16 +457,15 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     cows = insems[insems["lact"].fillna(0) > 0].copy()
     heifers = insems[insems["lact"].fillna(0) <= 0].copy()
 
-    # ---------- helpers ----------
     def safe_mean(xs):
         return float(pd.Series(xs, dtype="float64").mean()) if xs else None
 
     def safe_median(xs):
         return float(pd.Series(xs, dtype="float64").median()) if xs else None
 
-    # ------------------------
-    #  КОРОВЫ: циклы от отёла
-    # ------------------------
+                              
+                             
+                              
     cow_services = []
     cow_intervals = []
     first_ai_dim_rows = []
@@ -537,9 +522,9 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
                     continue
                 cow_services.append(int(p_pos[0] + 1))
 
-    # ------------------------
-    #  ТЁЛКИ: от первого осем.
-    # ------------------------
+                              
+                              
+                              
     heifer_services = []
     heifer_intervals = []
     heifer_first_ages = []
@@ -564,7 +549,7 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
                 continue
             heifer_services.append(int(p_pos[0] + 1))
 
-    # --- агрегаты ---
+                      
     cow_services_mean = safe_mean(cow_services)
     cow_gap_mean = safe_mean(cow_intervals)
     cow_gap_median = safe_median(cow_intervals)
@@ -574,13 +559,12 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     heif_gap_median = safe_median(heifer_intervals)
     heif_first_age_mean = safe_mean(heifer_first_ages)
 
-    # first_ai_dim_by_lact
     first_by_lact = {}
     if first_ai_dim_rows:
         tmp = pd.DataFrame(first_ai_dim_rows, columns=["lact_cat", "first_dim"])
         first_by_lact = tmp.groupby("lact_cat")["first_dim"].mean().to_dict()
 
-    # --- печать ---
+                    
     if cow_services_mean is not None:
         print(f"Коровы: среднее осеменений до P (от отёла): {cow_services_mean:.2f} (n циклов={len(cow_services)})")
     else:
@@ -615,7 +599,6 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
     else:
         print("Тёлки: не удалось оценить возраст первого осеменения")
 
-    # ВАЖНО: ключи, которые ждёт твой main()
     return {
         "cow_services_per_conception": cow_services_mean,
         "cow_ai_interval_days": cow_gap_mean,
@@ -631,7 +614,6 @@ def compute_insemination_usage_params(calv: pd.DataFrame, ins: pd.DataFrame):
         "n_heifers_with_p": int(len(heifer_services)),
     }
 
-# ---------- Выбытие коров (DIM выбытия) ----------
 
 def compute_disposal_params(disp: pd.DataFrame):
     print("\n=== ВЫБЫТИЕ КОРОВ (DIM выбытия) ===")
@@ -780,7 +762,6 @@ def compute_annual_disposal_rate(calv: pd.DataFrame, disp: pd.DataFrame):
     return {"annual_rate": float(annual_rate), "years": int(n_years), "herd_size_est": int(herd_size_est)}
 
 
-# ---------- main ----------
 
 def main():
     calv, ins, disp, dry = load_data()

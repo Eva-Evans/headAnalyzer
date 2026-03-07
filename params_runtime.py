@@ -290,7 +290,7 @@ def _compute_disposal_params(calv: pd.DataFrame, disp: pd.DataFrame) -> Tuple[di
 
     disposal_params = {"by_lact": by_lact, "overall": overall}
 
-    # грубая оценка годовой доли выбытий
+                                        
     dmin = merged["left_dt"].min()
     dmax = merged["left_dt"].max()
     years = (dmax - dmin).days / 365.25 if pd.notna(dmin) and pd.notna(dmax) else 0.0
@@ -315,7 +315,7 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
     ins["dim_age"] = pd.to_numeric(ins["dim_age"], errors="coerce")
     ins["reg_s"] = ins["reg"].apply(norm_id)
 
-    # интервалы
+               
     def mean_interval(df: pd.DataFrame) -> float:
         df = df[(df["reg_s"] != "") & (df["event_date"].notna())].copy()
         if df.empty:
@@ -328,7 +328,6 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
     cow_ai_interval = mean_interval(ins[ins["lact"] > 0])
     heifer_ai_interval = mean_interval(ins[ins["lact"] <= 0])
 
-    # calving events (для циклов коров)
     calv["event_type_n"] = calv["event_type"].apply(norm_event_type)
     calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce")
     calv["mother_reg_s"] = calv["mother_reg"].apply(norm_id)
@@ -347,7 +346,6 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
             merged = _merge_asof_by_reg(left, right, "left_dt", "right_dt")
             merged = merged[merged["left_dt"] >= merged["right_dt"]].copy()
 
-            # first AI after calving
             merged = merged.sort_values(["reg_s", "right_dt", "left_dt"], kind="mergesort")
             first_ai = merged.groupby(["reg_s", "right_dt"], sort=False).head(1).copy()
             first_ai["lact_cat"] = first_ai["lact"].clip(lower=1, upper=4)
@@ -356,7 +354,6 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
                 for k, v in agg.items():
                     cow_first_ai_by_lact[int(k)] = float(v)
 
-            # services per conception: count attempts until first P in cycle
             def attempts_until_p(g: pd.DataFrame) -> float | None:
                 g = g.sort_values("left_dt", kind="mergesort")
                 idx = g.index[g["result_norm"] == "P"]
@@ -374,7 +371,6 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
             if vals:
                 cow_spc = float(np.mean(vals))
 
-    # heifers: services per conception + first ai age
     ins_h = ins[(ins["lact"] <= 0) & (ins["reg_s"] != "") & (ins["event_date"].notna())].copy()
     heifer_first_ai_age = float("nan")
     heifer_spc = float("nan")
@@ -446,7 +442,6 @@ def compute_params_from_db() -> RuntimeParams:
         insemination_params=insemination_params,
         meta=meta,
     )
-# params_runtime.py (добавить)
 
 from dataclasses import dataclass
 from datetime import timedelta
@@ -457,8 +452,8 @@ from calendar import monthrange
 @dataclass
 class PendingCalvings:
     """Ожидаемые отёлы, уже 'заложенные' до даты старта прогноза."""
-    cows: Counter  # Counter[date] -> count
-    heifers: Counter  # Counter[date] -> count
+    cows: Counter
+    heifers: Counter
     meta: dict
 
 
@@ -489,12 +484,11 @@ def _compute_pending_calvings_from_history(
     if df.empty:
         return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
 
-    # дедуп: 1 беременность на животное => берём последнее P
     df = df.sort_values(["reg_s", "event_date"], kind="mergesort")
     df = df.groupby("reg_s", sort=False).tail(1)
 
     df["due_date"] = df["event_date"].apply(lambda d: d + timedelta(days=int(gestation_days)))
-    # интересуют отёлы после старта прогноза
+                                            
     df = df[df["due_date"] >= start_date].copy()
     if df.empty:
         return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})

@@ -1,4 +1,3 @@
-# etl/calvings_births.py
 from __future__ import annotations
 
 import re
@@ -10,9 +9,8 @@ import pandas as pd
 
 from db import engine
 
-# -----------------------------------------------------------------------------
-# Helpers: column mapping
-# -----------------------------------------------------------------------------
+                                                                               
+                                                                               
 
 def _norm_colname(x: Any) -> str:
     """
@@ -26,43 +24,41 @@ def _norm_colname(x: Any) -> str:
     return s
 
 
-# алиасы -> канонические имена колонок, которые мы дальше используем в пайплайне
+                                                                                
 _COL_ALIASES: Dict[str, Tuple[str, ...]] = {
-    # животное
+              
     "reg": (
         "REG", "ANIMAL", "ANIMALID", "ID", "EAR", "EARTAG", "EARTAGID",
         "НОМЕР", "НОМЕРЖИВОТНОГО", "ЖИВОТНОЕ", "ИД", "ИДЖИВОТНОГО", "АБС", "ABS",
     ),
-    # мать
+          
     "mother_reg": (
         "MOTHERREG", "MOTHER", "DAM", "DAMID", "MOTHERID",
         "МАТЬ", "МАТКА", "НОМЕРМАТЕРИ", "МАТЕРЬ", "МАМА",
     ),
-    # дата рождения (часто BDAT)
     "birth_date": (
         "BDAT", "BIRTHDATE", "BIRTH_DATE", "DOB",
         "ДАТАРОЖДЕНИЯ", "ДАТАРОЖД", "РОЖДЕНИЕ", "ДАТАРОЖДЖИВОТНОГО",
     ),
-    # пол (часто GNDR)
     "sex": (
         "GNDR", "GENDER", "SEX", "SX",
         "ПОЛ", "ПОЛЖИВОТНОГО",
     ),
-    # тип события
+                 
     "event_type": (
         "EVENTTYPE", "EVENT_TYPE", "TYPE", "EVTYPE", "EVENT",
         "СОБЫТИЕ", "ТИПСОБЫТИЯ", "ТИПСОБ", "ВИДСОБЫТИЯ",
     ),
-    # дата события
+                  
     "event_date": (
         "EVENTDATE", "EVENT_DATE", "EDAT", "DATE", "DT", "EVENTDT",
         "ДАТА", "ДАТАСОБЫТИЯ", "ДАТАСОБ", "ДАТА_СОБЫТИЯ", "ДАТАОТЕЛА",
     ),
-    # лактация (если есть)
+                          
     "lact": (
         "LACT", "LACTATION", "ЛАКТАЦИЯ", "НОМЕРЛАКТАЦИИ",
     ),
-    # прочее (опционально — если вдруг есть в выгрузке)
+                                                       
     "note": ("NOTE", "КОММЕНТАРИЙ", "ПРИМЕЧАНИЕ", "ЗАМЕТКА"),
     "protocol": ("PROTOCOL", "ПРОТОКОЛ"),
     "technician": ("TECHNICIAN", "OPERATOR", "ТЕХНИК", "ОПЕРАТОР"),
@@ -71,6 +67,27 @@ _COL_ALIASES: Dict[str, Tuple[str, ...]] = {
     "disposal_reason": ("DISPOSALREASON", "DISPOSAL_REASON", "ПРИЧИНАВЫБЫТИЯ", "ПРИЧИНАВЫВОДА"),
     "disposal_remark": ("DISPOSALREMARK", "DISPOSAL_REMARK", "КОММЕНТАРИЙВЫБЫТИЯ"),
 }
+
+_FARM_ALIASES: Tuple[str, ...] = (
+    "SOURCE.NAME",
+    "SOURCE_NAME",
+    "SOURCENAME",
+    "ХОЗЯЙСТВО",
+    "FARM",
+    "COMPANY",
+)
+
+_SUBDIVISION_ALIASES: Tuple[str, ...] = (
+    "СТОЛБЕЦ1",
+    "СТОЛБЕЦ 1",
+    "ПОДРАЗДЕЛЕНИЕ",
+    "ФЕРМА",
+    "SUBDIVISION",
+    "DEPARTMENT",
+    "UNIT",
+    "ЖК",
+    "МТФ",
+)
 
 
 def _pick_column(df: pd.DataFrame, aliases: Iterable[str]) -> str | None:
@@ -91,13 +108,21 @@ def _build_rename_map(df: pd.DataFrame) -> Dict[str, str]:
     return rename
 
 
-# -----------------------------------------------------------------------------
-# Helpers: value normalization
-# -----------------------------------------------------------------------------
+def _pick_meta_column(df: pd.DataFrame, aliases: Iterable[str]) -> str | None:
+    norm_to_real = {_norm_colname(c): c for c in df.columns}
+    for alias in aliases:
+        key = _norm_colname(alias)
+        if key in norm_to_real:
+            return norm_to_real[key]
+    return None
+
+
+                                                                               
+                                                                               
 
 def _norm_id_series(s: pd.Series) -> pd.Series:
     out = s.astype("string").fillna("").str.replace("\u00a0", " ", regex=False).str.strip()
-    # "12345.0" -> "12345"
+                          
     out = out.str.replace(r"^(\d+)\.0+$", r"\1", regex=True)
     out = out.replace({"": pd.NA, "nan": pd.NA, "NaN": pd.NA})
     return out
@@ -118,7 +143,7 @@ def _norm_event_type_value(x: Any) -> str:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return ""
     v = str(x).replace("\u00a0", " ").strip().upper().replace("Ё", "Е")
-    # лёгкая нормализация синонимов
+                                   
     if "РОЖ" in v or "BIRTH" in v:
         return "РОЖДЕН"
     if "ОТЕЛ" in v or "CALV" in v:
@@ -139,14 +164,14 @@ def _as_excel_source(file: Any):
     if isinstance(file, (bytes, bytearray)):
         return BytesIO(file)
 
-    if hasattr(file, "getvalue"):  # streamlit UploadedFile
+    if hasattr(file, "getvalue"):
         return BytesIO(file.getvalue())
 
-    if hasattr(file, "read"):  # file-like
+    if hasattr(file, "read"):
         data = file.read()
         return BytesIO(data)
 
-    return file  # на всякий случай
+    return file                    
 
 
 def _read_excel_best_header(src, max_header: int = 20) -> pd.DataFrame:
@@ -154,11 +179,10 @@ def _read_excel_best_header(src, max_header: int = 20) -> pd.DataFrame:
     Часто шапка не на первой строке. Пробуем header=0..max_header,
     выбираем вариант, где нашлись обязательные колонки и максимум сматченных.
     """
-    best_df: pd.DataFrame | None = None
+    best_header: int | None = None
     best_score = -1
     last_err: Exception | None = None
 
-    # если src BytesIO — нужно уметь перематывать
     def _rewind():
         if hasattr(src, "seek"):
             try:
@@ -166,10 +190,24 @@ def _read_excel_best_header(src, max_header: int = 20) -> pd.DataFrame:
             except Exception:
                 pass
 
+                                                                
+    try:
+        _rewind()
+        fast = pd.read_excel(src, header=0, dtype=object, nrows=400)
+        rename_fast = _build_rename_map(fast)
+        fast = fast.rename(columns=rename_fast)
+        if {"reg", "event_date", "event_type"}.issubset(set(fast.columns)):
+            _rewind()
+            full = pd.read_excel(src, header=0, dtype=object)
+            return full.rename(columns=_build_rename_map(full))
+    except Exception as e:
+        last_err = e
+
     for header in range(0, max_header + 1):
         try:
             _rewind()
-            tmp = pd.read_excel(src, header=header, dtype=object)
+                                                                                   
+            tmp = pd.read_excel(src, header=header, dtype=object, nrows=400)
             if tmp is None or tmp.empty:
                 continue
 
@@ -180,35 +218,46 @@ def _read_excel_best_header(src, max_header: int = 20) -> pd.DataFrame:
             if not required_min.issubset(set(tmp.columns)):
                 continue
 
-            score = len(set(rename.values()))  # сколько канонических колонок нашли
+            score = len(set(rename.values()))                                      
             if score > best_score:
-                best_df = tmp
+                best_header = header
                 best_score = score
         except Exception as e:
             last_err = e
             continue
 
-    if best_df is None:
+    if best_header is None:
         raise ValueError(
             "Не удалось распознать шапку/колонки в файле 'Отёлы+родившиеся'. "
             f"Последняя ошибка: {last_err}"
         )
-    return best_df
+
+    _rewind()
+    full_df = pd.read_excel(src, header=best_header, dtype=object)
+    full_df = full_df.rename(columns=_build_rename_map(full_df))
+    return full_df
 
 
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
+                                                                               
+                                                                               
 
-def read_calvings_excel(file) -> pd.DataFrame:
+def read_calvings_excel(file, include_meta: bool = False) -> pd.DataFrame:
     """
     Читает Excel (отёлы + родившиеся), приводит названия колонок к канону и нормализует значения.
     Возвращает df с минимумом колонок: reg, mother_reg, birth_date, sex, event_type, event_date (+ lact если есть).
     """
     src = _as_excel_source(file)
     df = _read_excel_best_header(src, max_header=20)
+    farm_col = _pick_meta_column(df, _FARM_ALIASES) if include_meta else None
+    subdivision_col = _pick_meta_column(df, _SUBDIVISION_ALIASES) if include_meta else None
+    farm_series = None
+    subdivision_series = None
+    if farm_col is not None:
+        farm_series = df[farm_col].astype("string").str.replace("\u00a0", " ", regex=False).str.strip()
+    if subdivision_col is not None:
+        subdivision_series = df[subdivision_col].astype("string").str.replace("\u00a0", " ", regex=False).str.strip()
 
-    # создаём необязательные, если их нет
+                                         
     for col, default in (
         ("mother_reg", pd.NA),
         ("birth_date", pd.NaT),
@@ -225,7 +274,7 @@ def read_calvings_excel(file) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = default
 
-    # нормализация
+                  
     df["reg"] = _norm_id_series(df["reg"])
     df["mother_reg"] = _norm_id_series(df["mother_reg"])
 
@@ -238,11 +287,9 @@ def read_calvings_excel(file) -> pd.DataFrame:
     df["lact"] = pd.to_numeric(df["lact"], errors="coerce")
     df["age"] = pd.to_numeric(df["age"], errors="coerce")
 
-    # если birth_date пустая — для "РОЖДЕН" берём event_date
     mask_birth = (df["event_type"] == "РОЖДЕН") & df["birth_date"].isna()
     df.loc[mask_birth, "birth_date"] = df.loc[mask_birth, "event_date"]
 
-    # минимальный набор + полезные поля (остальные clean_calvings добьёт)
     keep = [
         "reg",
         "mother_reg",
@@ -262,8 +309,11 @@ def read_calvings_excel(file) -> pd.DataFrame:
     for c in keep:
         if c not in df.columns:
             df[c] = pd.NA
-
-    return df[keep].copy()
+    out = df[keep].copy()
+    if include_meta:
+        out["__farm"] = farm_series if farm_series is not None else pd.NA
+        out["__subdivision"] = subdivision_series if subdivision_series is not None else pd.NA
+    return out
 
 
 def clean_calvings(df: pd.DataFrame) -> pd.DataFrame:
@@ -301,7 +351,7 @@ def clean_calvings(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df[target_cols]
 
-    # Типы
+          
     df["birth_date"] = pd.to_datetime(df["birth_date"], errors="coerce")
     df["disposal_date"] = pd.to_datetime(df["disposal_date"], errors="coerce")
     df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce")
@@ -309,14 +359,12 @@ def clean_calvings(df: pd.DataFrame) -> pd.DataFrame:
     df["lact"] = pd.to_numeric(df["lact"], errors="coerce")
     df["age"] = pd.to_numeric(df["age"], errors="coerce")
 
-    # IDs как строки
     df["reg"] = _norm_id_series(df["reg"])
     df["mother_reg"] = _norm_id_series(df["mother_reg"])
     df["calf1_reg"] = _norm_id_series(df["calf1_reg"])
     df["calf2_reg"] = _norm_id_series(df["calf2_reg"])
     df["calf3_reg"] = _norm_id_series(df["calf3_reg"])
 
-    # Нормализуем event_type/sex ещё раз на всякий
     df["event_type"] = df["event_type"].apply(_norm_event_type_value)
     df["sex"] = df["sex"].apply(_norm_sex_value)
 
