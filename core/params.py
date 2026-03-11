@@ -123,6 +123,47 @@ def get_param_source() -> Dict[str, Any]:
         },
     }))
 
+
+def get_model_default_params() -> Dict[str, Any]:
+    return _normalize_param_aliases({
+        "conception": {
+            "avg_cow_dim_by_lact": dict(mp.CONCEPTION_PARAMS.avg_cow_dim_by_lact),
+            "avg_cow_dim_global": float(mp.CONCEPTION_PARAMS.avg_cow_dim_global),
+            "avg_heifer_age_days": float(mp.CONCEPTION_PARAMS.avg_heifer_age_days),
+        },
+        "gestation_days": float(mp.GESTATION_DAYS),
+        "dry_days": int(getattr(mp, "DRY_DAYS", 53)),
+        "disposal_params": dict(mp.DISPOSAL_PARAMS),
+        "annual_disposal_rate": float(getattr(mp, "ANNUAL_DISPOSAL_RATE", 0.0957)),
+        "insemination_params": {
+            "cow_services_per_conception": float(mp.INSEMINATION_PARAMS.cow_services_per_conception),
+            "cow_ai_interval_days": float(mp.INSEMINATION_PARAMS.cow_ai_interval_days),
+            "cow_first_ai_dim_by_lact": dict(mp.INSEMINATION_PARAMS.cow_first_ai_dim_by_lact),
+            "heifer_services_per_conception": float(mp.INSEMINATION_PARAMS.heifer_services_per_conception),
+            "heifer_ai_interval_days": float(mp.INSEMINATION_PARAMS.heifer_ai_interval_days),
+            "heifer_first_ai_age_days": float(mp.INSEMINATION_PARAMS.heifer_first_ai_age_days),
+        },
+        "semen_usage": {
+            "cow_trad": float(mp.SEMEN_USAGE_PROBS.cow_trad),
+            "cow_sex": float(mp.SEMEN_USAGE_PROBS.cow_sex),
+            "heifer_trad": float(mp.SEMEN_USAGE_PROBS.heifer_trad),
+            "heifer_sex": float(mp.SEMEN_USAGE_PROBS.heifer_sex),
+            "meta": {"window": "fallback", "n_cow": 0, "n_heifer": 0},
+        },
+        "semen_sex_ratios": {
+            "trad": {
+                "bull_share": float(mp.SEMEN_SEX_RATIOS["trad"].bull_share),
+                "heifer_share": float(mp.SEMEN_SEX_RATIOS["trad"].heifer_share),
+            },
+            "sex": {
+                "bull_share": float(mp.SEMEN_SEX_RATIOS["sex"].bull_share),
+                "heifer_share": float(mp.SEMEN_SEX_RATIOS["sex"].heifer_share),
+            },
+            "meta": {"n_trad": 0, "n_sex": 0, "window": "fallback"},
+        },
+        "HERD_CAPACITY": dict(mp.HERD_CAPACITY),
+    })
+
 from copy import deepcopy
 
 

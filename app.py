@@ -30,6 +30,7 @@ with st.expander("Админ-режим", expanded=st.session_state.is_admin):
             if st.button("Выйти", key="admin_logout_btn", use_container_width=True):
                 st.session_state.is_admin = False
                 st.session_state.pop("runtime_overrides", None)
+                st.session_state.pop("tab3_farm_param_overrides", None)
                 st.rerun()
         with c2:
             st.success("Админ-режим включён")

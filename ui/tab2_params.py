@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Union
 import pandas as pd
 import streamlit as st
 
-from core.params import get_param_source, apply_admin_overrides
+from core.params import get_param_source, apply_admin_overrides, get_model_default_params
 
 
 Token = Union[str, int]
@@ -221,22 +221,6 @@ def _build_specs(final: dict) -> List[Spec]:
                 add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "median_dim"], f"Выбытие: DIM (медиана) — {_lact_label(kk)} (дн.)")
                 add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "mean_dim"], f"Выбытие: DIM (среднее) — {_lact_label(kk)} (дн.)")
 
-                                                                 
-                by_lact_kk = _dict_get_any_key(by_lact, kk)
-                if isinstance(by_lact_kk, dict) and "n" in by_lact_kk:
-                    add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "n"], f"Выбытие: кол-во наблюдений — {_lact_label(kk)} (гол.)", editable=False)
-                if isinstance(by_lact_kk, dict) and "share" in by_lact_kk:
-                    add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "share"], f"Выбытие: доля наблюдений — {_lact_label(kk)} (доля)", editable=False)
-
-        overall = dp.get("overall")
-        if isinstance(overall, dict):
-            if "median_dim" in overall:
-                add("Выбытие", ["DISPOSAL_PARAMS", "overall", "median_dim"], "Выбытие: DIM (медиана) — все лактации (дн.)", editable=False)
-            if "mean_dim" in overall:
-                add("Выбытие", ["DISPOSAL_PARAMS", "overall", "mean_dim"], "Выбытие: DIM (среднее) — все лактации (дн.)", editable=False)
-            if "n" in overall:
-                add("Выбытие", ["DISPOSAL_PARAMS", "overall", "n"], "Выбытие: кол-во наблюдений — всего (гол.)", editable=False)
-
                                                   
     sus = final.get("SEMEN_USAGE_SHARES")
     if isinstance(sus, dict):
@@ -312,13 +296,18 @@ def render_tab2_params() -> None:
     if has_overrides:
         st.warning("Активны админ-правки: прогноз считается с учётом изменённых параметров.")
 
-    c1, c2 = st.columns([1, 1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         edit_mode = st.toggle("Редактировать", value=False, key="tab2_edit_mode")
     with c2:
         if st.button("Сбросить правки", use_container_width=True, key="tab2_reset_overrides"):
             st.session_state.pop("runtime_overrides", None)
             st.success("Админ-правки сброшены.")
+            st.rerun()
+    with c3:
+        if st.button("Вернуться к дефолтным параметрам", use_container_width=True, key="tab2_restore_defaults"):
+            st.session_state["runtime_overrides"] = get_model_default_params()
+            st.success("Применены дефолтные параметры модели.")
             st.rerun()
     if not edit_mode:
         _render_grouped_readonly(df_all)

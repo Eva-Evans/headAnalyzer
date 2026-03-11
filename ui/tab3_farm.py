@@ -50,6 +50,21 @@ TAB3_SHOW_TRANSFER_SNAPSHOT = False
 TAB3_SHOW_TRANSFER_FLOWS = False
 TAB3_UNASSIGNED_FARM = "ВНЕ ХОЗЯЙСТВА"
 
+FARM_BACKTEST_TARGETS: list[str] = [
+    "Ожидаемый отёл, всего",
+    "Ожидаемый отёл, из них коров",
+    "Ожидаемый отёл, из них нетелей",
+    "Ожидаемые бычки (условно)",
+    "Ожидаемые тёлочки (условно)",
+    "Доля бычков среди рождений, %",
+    "Доля тёлочек среди рождений, %",
+]
+
+FARM_PERCENT_TARGETS = {
+    "Доля бычков среди рождений, %",
+    "Доля тёлочек среди рождений, %",
+}
+
 
 @dataclass
 class FarmUploadBundle:
@@ -600,6 +615,10 @@ def _farm_param_overrides_state() -> dict[str, dict]:
     return raw
 
 
+def _is_admin_mode() -> bool:
+    return bool(st.session_state.get("is_admin", False))
+
+
 def _build_farm_params(base_params: dict, farm_override: dict | None) -> dict:
     params = deepcopy(base_params or {})
                                                                                      
@@ -617,6 +636,8 @@ def _build_farm_params(base_params: dict, farm_override: dict | None) -> dict:
 
 
 def _farm_param_editor_block(farms: list[str], base_params: dict) -> None:
+    if not _is_admin_mode():
+        return
     with st.expander("Параметры прогноза по хозяйству", expanded=False):
         if not farms:
             return
@@ -625,8 +646,43 @@ def _farm_param_editor_block(farms: list[str], base_params: dict) -> None:
         farm_name = st.selectbox("Хозяйство для настройки параметров", farms, index=0, key="tab3_param_farm_select")
         farm_override = deepcopy(all_overrides.get(farm_name, {}))
 
-        base_gest = int(round(float(base_params.get("GESTATION_DAYS", 272) or 272)))
-        base_dry = int(round(float(base_params.get("DRY_DAYS", 53) or 53)))
+        def _get_nested(d: dict | None, path: list[Any], default: Any) -> Any:
+            cur: Any = d if isinstance(d, dict) else {}
+            for t in path:
+                if not isinstance(cur, dict):
+                    return default
+                if t in cur:
+                    cur = cur[t]
+                    continue
+                if isinstance(t, int) and str(t) in cur:
+                    cur = cur[str(t)]
+                    continue
+                if isinstance(t, str) and t.isdigit() and int(t) in cur:
+                    cur = cur[int(t)]
+                    continue
+                return default
+            return default if cur is None else cur
+
+        def _pick(path: list[Any], default: Any) -> Any:
+            ov_v = _get_nested(farm_override, path, None)
+            if ov_v is not None:
+                return ov_v
+            return _get_nested(base_params, path, default)
+
+        def _set_nested(d: dict, path: list[Any], value: Any) -> None:
+            cur = d
+            for t in path[:-1]:
+                key = t
+                if isinstance(cur, dict) and isinstance(t, int) and str(t) in cur and t not in cur:
+                    key = str(t)
+                if key not in cur or not isinstance(cur[key], dict):
+                    cur[key] = {}
+                cur = cur[key]
+            leaf = path[-1]
+            if isinstance(cur, dict) and isinstance(leaf, int) and str(leaf) in cur and leaf not in cur:
+                leaf = str(leaf)
+            cur[leaf] = value
+
         st.markdown("**Сроки**")
         c1, c2 = st.columns(2)
         with c1:
@@ -634,7 +690,7 @@ def _farm_param_editor_block(farms: list[str], base_params: dict) -> None:
                 "Длительность стельности (дн.)",
                 min_value=200,
                 max_value=310,
-                value=int(farm_override.get("GESTATION_DAYS", base_gest)),
+                value=int(round(float(_pick(["GESTATION_DAYS"], 272) or 272))),
                 step=1,
                 key=f"tab3_param_gest_{farm_name}",
             )
@@ -643,17 +699,263 @@ def _farm_param_editor_block(farms: list[str], base_params: dict) -> None:
                 "Длительность сухостоя (дн.)",
                 min_value=20,
                 max_value=120,
-                value=int(farm_override.get("DRY_DAYS", base_dry)),
+                value=int(round(float(_pick(["DRY_DAYS"], 53) or 53))),
                 step=1,
                 key=f"tab3_param_dry_{farm_name}",
             )
 
+        st.markdown("**Стельность**")
+        c3, c4 = st.columns(2)
+        with c3:
+            avg_cow_dim_global = st.number_input(
+                "Коровы: средний DIM наступления стельности",
+                min_value=40.0,
+                max_value=250.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_cow_dim_global"], 104.0)),
+                step=1.0,
+                key=f"tab3_param_cp_cow_global_{farm_name}",
+            )
+        with c4:
+            avg_heifer_age_days = st.number_input(
+                "Тёлки: средний возраст наступления стельности (дн.)",
+                min_value=250.0,
+                max_value=700.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_heifer_age_days"], 400.0)),
+                step=1.0,
+                key=f"tab3_param_cp_heifer_age_{farm_name}",
+            )
+
+        c5, c6 = st.columns(2)
+        with c5:
+            cp_l1 = st.number_input(
+                "Коровы: DIM наступления стельности — 1-я лактация",
+                min_value=40.0,
+                max_value=250.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 1], avg_cow_dim_global)),
+                step=1.0,
+                key=f"tab3_param_cp_l1_{farm_name}",
+            )
+            cp_l2 = st.number_input(
+                "Коровы: DIM наступления стельности — 2-я лактация",
+                min_value=40.0,
+                max_value=250.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 2], avg_cow_dim_global)),
+                step=1.0,
+                key=f"tab3_param_cp_l2_{farm_name}",
+            )
+        with c6:
+            cp_l3 = st.number_input(
+                "Коровы: DIM наступления стельности — 3-я лактация",
+                min_value=40.0,
+                max_value=250.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 3], avg_cow_dim_global)),
+                step=1.0,
+                key=f"tab3_param_cp_l3_{farm_name}",
+            )
+            cp_l4 = st.number_input(
+                "Коровы: DIM наступления стельности — 4+ лактация",
+                min_value=40.0,
+                max_value=250.0,
+                value=float(_pick(["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 4], avg_cow_dim_global)),
+                step=1.0,
+                key=f"tab3_param_cp_l4_{farm_name}",
+            )
+
+        st.markdown("**Осеменения**")
+        c7, c8 = st.columns(2)
+        with c7:
+            cow_spc = st.number_input(
+                "Коровы: осеменений до стельности (P), среднее",
+                min_value=1.0,
+                max_value=5.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_services_per_conception"], 2.0)),
+                step=0.01,
+                key=f"tab3_param_ins_cow_spc_{farm_name}",
+            )
+            cow_interval = st.number_input(
+                "Коровы: интервал между осеменениями (дн.)",
+                min_value=14.0,
+                max_value=90.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_ai_interval_days"], 45.0)),
+                step=0.5,
+                key=f"tab3_param_ins_cow_interval_{farm_name}",
+            )
+        with c8:
+            heif_spc = st.number_input(
+                "Тёлки: осеменений до стельности (P), среднее",
+                min_value=1.0,
+                max_value=5.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "heifer_services_per_conception"], 2.0)),
+                step=0.01,
+                key=f"tab3_param_ins_heif_spc_{farm_name}",
+            )
+            heif_interval = st.number_input(
+                "Тёлки: интервал между осеменениями (дн.)",
+                min_value=14.0,
+                max_value=90.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "heifer_ai_interval_days"], 25.0)),
+                step=0.5,
+                key=f"tab3_param_ins_heif_interval_{farm_name}",
+            )
+
+        heif_first_ai = st.number_input(
+            "Тёлки: возраст первого осеменения (дн.)",
+            min_value=250.0,
+            max_value=700.0,
+            value=float(_pick(["INSEMINATION_PARAMS", "heifer_first_ai_age_days"], 380.0)),
+            step=1.0,
+            key=f"tab3_param_ins_heif_first_ai_{farm_name}",
+        )
+
+        c9, c10 = st.columns(2)
+        with c9:
+            cow_first_ai_l1 = st.number_input(
+                "Коровы: DIM первого осеменения — 1-я лактация",
+                min_value=30.0,
+                max_value=220.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 1], 72.0)),
+                step=1.0,
+                key=f"tab3_param_ins_first_l1_{farm_name}",
+            )
+            cow_first_ai_l2 = st.number_input(
+                "Коровы: DIM первого осеменения — 2-я лактация",
+                min_value=30.0,
+                max_value=220.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 2], 72.0)),
+                step=1.0,
+                key=f"tab3_param_ins_first_l2_{farm_name}",
+            )
+        with c10:
+            cow_first_ai_l3 = st.number_input(
+                "Коровы: DIM первого осеменения — 3-я лактация",
+                min_value=30.0,
+                max_value=220.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 3], 72.0)),
+                step=1.0,
+                key=f"tab3_param_ins_first_l3_{farm_name}",
+            )
+            cow_first_ai_l4 = st.number_input(
+                "Коровы: DIM первого осеменения — 4+ лактация",
+                min_value=30.0,
+                max_value=220.0,
+                value=float(_pick(["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 4], 72.0)),
+                step=1.0,
+                key=f"tab3_param_ins_first_l4_{farm_name}",
+            )
+
+        st.markdown("**Выбытие**")
+        annual_disposal = st.number_input(
+            "Среднегодовой процент выбытия коров (доля)",
+            min_value=0.0,
+            max_value=0.5,
+            value=float(_pick(["ANNUAL_DISPOSAL_RATE"], 0.0957)),
+            step=0.001,
+            format="%.4f",
+            key=f"tab3_param_annual_disp_{farm_name}",
+        )
+
+        c11, c12 = st.columns(2)
+        with c11:
+            disp_median_l1 = st.number_input(
+                "Выбытие: DIM медиана — 1-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 1, "median_dim"], 111.0)),
+                step=1.0,
+                key=f"tab3_param_disp_median_l1_{farm_name}",
+            )
+            disp_median_l2 = st.number_input(
+                "Выбытие: DIM медиана — 2-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 2, "median_dim"], 226.0)),
+                step=1.0,
+                key=f"tab3_param_disp_median_l2_{farm_name}",
+            )
+            disp_median_l3 = st.number_input(
+                "Выбытие: DIM медиана — 3-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 3, "median_dim"], 194.0)),
+                step=1.0,
+                key=f"tab3_param_disp_median_l3_{farm_name}",
+            )
+            disp_median_l4 = st.number_input(
+                "Выбытие: DIM медиана — 4+ лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 4, "median_dim"], 73.0)),
+                step=1.0,
+                key=f"tab3_param_disp_median_l4_{farm_name}",
+            )
+        with c12:
+            disp_mean_l1 = st.number_input(
+                "Выбытие: DIM среднее — 1-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 1, "mean_dim"], 160.0)),
+                step=1.0,
+                key=f"tab3_param_disp_mean_l1_{farm_name}",
+            )
+            disp_mean_l2 = st.number_input(
+                "Выбытие: DIM среднее — 2-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 2, "mean_dim"], 235.0)),
+                step=1.0,
+                key=f"tab3_param_disp_mean_l2_{farm_name}",
+            )
+            disp_mean_l3 = st.number_input(
+                "Выбытие: DIM среднее — 3-я лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 3, "mean_dim"], 192.0)),
+                step=1.0,
+                key=f"tab3_param_disp_mean_l3_{farm_name}",
+            )
+            disp_mean_l4 = st.number_input(
+                "Выбытие: DIM среднее — 4+ лактация",
+                min_value=10.0,
+                max_value=500.0,
+                value=float(_pick(["DISPOSAL_PARAMS", "by_lact", 4, "mean_dim"], 127.0)),
+                step=1.0,
+                key=f"tab3_param_disp_mean_l4_{farm_name}",
+            )
+
         a1, a2 = st.columns(2)
         if a1.button("Сохранить параметры хозяйства", use_container_width=True, key=f"tab3_param_save_{farm_name}"):
-            all_overrides[farm_name] = {
-                "GESTATION_DAYS": int(gest),
-                "DRY_DAYS": int(dry),
-            }
+            new_override: dict[str, Any] = {}
+            _set_nested(new_override, ["GESTATION_DAYS"], int(gest))
+            _set_nested(new_override, ["DRY_DAYS"], int(dry))
+
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_cow_dim_global"], float(avg_cow_dim_global))
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_heifer_age_days"], float(avg_heifer_age_days))
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 1], float(cp_l1))
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 2], float(cp_l2))
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 3], float(cp_l3))
+            _set_nested(new_override, ["CONCEPTION_PARAMS", "avg_cow_dim_by_lact", 4], float(cp_l4))
+
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_services_per_conception"], float(cow_spc))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_ai_interval_days"], float(cow_interval))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "heifer_services_per_conception"], float(heif_spc))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "heifer_ai_interval_days"], float(heif_interval))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "heifer_first_ai_age_days"], float(heif_first_ai))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 1], float(cow_first_ai_l1))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 2], float(cow_first_ai_l2))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 3], float(cow_first_ai_l3))
+            _set_nested(new_override, ["INSEMINATION_PARAMS", "cow_first_ai_dim_by_lact", 4], float(cow_first_ai_l4))
+
+            _set_nested(new_override, ["ANNUAL_DISPOSAL_RATE"], float(annual_disposal))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 1, "median_dim"], float(disp_median_l1))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 2, "median_dim"], float(disp_median_l2))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 3, "median_dim"], float(disp_median_l3))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 4, "median_dim"], float(disp_median_l4))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 1, "mean_dim"], float(disp_mean_l1))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 2, "mean_dim"], float(disp_mean_l2))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 3, "mean_dim"], float(disp_mean_l3))
+            _set_nested(new_override, ["DISPOSAL_PARAMS", "by_lact", 4, "mean_dim"], float(disp_mean_l4))
+
+            all_overrides[farm_name] = new_override
             st.session_state["tab3_farm_param_overrides"] = all_overrides
             _clear_forecast_cache(entity_type="farm", entity_name=farm_name)
             st.success(f"Параметры для «{farm_name}» сохранены.")
@@ -1393,6 +1695,375 @@ def _month_label(d: date) -> str:
     return f"{d.year:04d}-{d.month:02d}"
 
 
+def _month_end_shift(d_end: date, months_delta: int) -> date:
+    ts = pd.Timestamp(d_end) + pd.DateOffset(months=months_delta)
+    return month_end(int(ts.year), int(ts.month))
+
+
+def _norm_sex_marker_backtest(x: Any) -> str | None:
+    if x is None:
+        return None
+    v = str(x).strip().upper().replace("Ё", "Е")
+    if v in {"", "NAN", "NONE", "NULL"}:
+        return None
+    if v in {"M", "М", "MALE", "1", "БЫК", "БЫЧ", "БЫЧОК"}:
+        return "M"
+    if v in {"F", "Ж", "FEMALE", "2", "ТЕЛКА", "ТЕЛОЧКА"}:
+        return "F"
+    return None
+
+
+def _actual_birth_stats_month_from_tables(
+    calv_df: pd.DataFrame,
+    ins_df: pd.DataFrame,
+    month_end_date: date,
+    as_of_date: date | None = None,
+) -> dict[str, float]:
+    empty = {k: 0.0 for k in FARM_BACKTEST_TARGETS}
+    if not isinstance(calv_df, pd.DataFrame) or calv_df.empty:
+        return empty
+
+    m_start = date(month_end_date.year, month_end_date.month, 1)
+    if month_end_date.month == 12:
+        m_next = date(month_end_date.year + 1, 1, 1)
+    else:
+        m_next = date(month_end_date.year, month_end_date.month + 1, 1)
+
+    c = calv_df.copy()
+    c["event_date_n"] = pd.to_datetime(c.get("event_date"), errors="coerce").dt.normalize()
+    c["event_type_n"] = c.get("event_type", pd.Series(dtype=object)).map(_norm_event_type)
+    c["mother_reg_s"] = c.get("mother_reg", pd.Series(dtype=object)).map(_norm_id)
+    c["reg_s"] = c.get("reg", pd.Series(dtype=object)).map(_norm_id)
+    c["sex_norm"] = c.get("sex", pd.Series(dtype=object)).map(_norm_sex_marker_backtest)
+
+    mask = (
+        c["event_date_n"].notna()
+        & (c["event_date_n"] >= pd.Timestamp(m_start))
+        & (c["event_date_n"] < pd.Timestamp(m_next))
+        & (c["event_type_n"] == "РОЖДЕН")
+    )
+    if as_of_date is not None:
+        mask &= c["event_date_n"] <= pd.Timestamp(as_of_date)
+
+    born = c.loc[mask, ["mother_reg_s", "reg_s", "event_date_n", "sex_norm"]].copy()
+    if born.empty:
+        return empty
+
+    dam = born["mother_reg_s"].replace("", pd.NA).fillna(born["reg_s"].replace("", pd.NA))
+    unknown_mask = dam.isna()
+    if bool(unknown_mask.any()):
+        unknown_ids = [f"__UNK__{i}" for i in range(int(unknown_mask.sum()))]
+        dam.loc[unknown_mask] = unknown_ids
+    born["dam_key"] = dam.astype(str)
+
+    ev = born[["dam_key", "event_date_n"]].drop_duplicates().rename(columns={"event_date_n": "calv_dt"})
+    total_calv = float(len(ev))
+    cow_calv = total_calv
+    heif_calv = 0.0
+
+    if isinstance(ins_df, pd.DataFrame) and not ins_df.empty:
+        ins = ins_df.copy()
+        ins["reg_s"] = ins.get("reg", pd.Series(dtype=object)).map(_norm_id)
+        ins["event_date_n"] = pd.to_datetime(ins.get("event_date"), errors="coerce").dt.normalize()
+        ins["lact_n"] = pd.to_numeric(ins.get("lact"), errors="coerce")
+        if as_of_date is not None:
+            ins = ins[ins["event_date_n"].notna() & (ins["event_date_n"] <= pd.Timestamp(as_of_date))]
+        else:
+            ins = ins[ins["event_date_n"].notna()]
+        ins = ins[ins["reg_s"] != ""]
+        if not ins.empty and not ev.empty:
+            left = ev.rename(columns={"dam_key": "reg_s"}).sort_values(["reg_s", "calv_dt"], kind="mergesort")
+            right = ins[["reg_s", "event_date_n", "lact_n"]].rename(columns={"event_date_n": "ins_dt"})
+            right = right.sort_values(["reg_s", "ins_dt"], kind="mergesort")
+            try:
+                m = pd.merge_asof(
+                    left,
+                    right,
+                    by="reg_s",
+                    left_on="calv_dt",
+                    right_on="ins_dt",
+                    direction="backward",
+                    allow_exact_matches=True,
+                )
+                lact = pd.to_numeric(m.get("lact_n"), errors="coerce")
+                heif_calv = float((lact <= 0).sum())
+                cow_calv = float(((lact > 0) | lact.isna()).sum())
+            except Exception:
+                cow_calv = total_calv
+                heif_calv = 0.0
+
+    bulls_known = float((born["sex_norm"] == "M").sum())
+    heifers_known = float((born["sex_norm"] == "F").sum())
+    total_birth_rows = float(len(born))
+    known = bulls_known + heifers_known
+    unknown = max(0.0, total_birth_rows - known)
+    bull_share_known = (bulls_known / known) if known > 0 else 0.5
+    bulls = bulls_known + unknown * bull_share_known
+    heifers = max(0.0, total_birth_rows - bulls)
+    total_by_sex = bulls + heifers
+    bull_pct = (bulls / total_by_sex * 100.0) if total_by_sex > 0 else 0.0
+    heif_pct = (heifers / total_by_sex * 100.0) if total_by_sex > 0 else 0.0
+
+    return {
+        "Ожидаемый отёл, всего": total_calv,
+        "Ожидаемый отёл, из них коров": cow_calv,
+        "Ожидаемый отёл, из них нетелей": heif_calv,
+        "Ожидаемые бычки (условно)": bulls,
+        "Ожидаемые тёлочки (условно)": heifers,
+        "Доля бычков среди рождений, %": bull_pct,
+        "Доля тёлочек среди рождений, %": heif_pct,
+    }
+
+
+def _is_fact_month_complete_for_subdivision(calv_df: pd.DataFrame, month_end_date: date) -> bool:
+    if not isinstance(calv_df, pd.DataFrame) or calv_df.empty:
+        return False
+
+    m_start = date(month_end_date.year, month_end_date.month, 1)
+    if month_end_date.month == 12:
+        m_next = date(month_end_date.year + 1, 1, 1)
+    else:
+        m_next = date(month_end_date.year, month_end_date.month + 1, 1)
+
+    c = calv_df.copy()
+    c["event_date_n"] = pd.to_datetime(c.get("event_date"), errors="coerce").dt.normalize()
+    c["event_type_n"] = c.get("event_type", pd.Series(dtype=object)).map(_norm_event_type)
+    c = c[
+        c["event_date_n"].notna()
+        & (c["event_date_n"] >= pd.Timestamp(m_start))
+        & (c["event_date_n"] < pd.Timestamp(m_next))
+        & (c["event_type_n"] == "РОЖДЕН")
+    ].copy()
+    if c.empty:
+        return False
+
+    max_dt = c["event_date_n"].max()
+    if pd.isna(max_dt):
+        return False
+    return bool(pd.Timestamp(max_dt).date() >= month_end_date)
+
+
+def _pred_metric_value_for_backtest(pred_vals: dict, metric_name: str, nmap: dict[str, float]) -> float:
+    if metric_name in FARM_PERCENT_TARGETS:
+        pred_bull = float(vals_get(pred_vals, "Ожидаемые бычки (условно)", nmap) or 0.0)
+        pred_heif = float(vals_get(pred_vals, "Ожидаемые тёлочки (условно)", nmap) or 0.0)
+        den = pred_bull + pred_heif
+        if den <= 0:
+            return 0.0
+        if metric_name == "Доля бычков среди рождений, %":
+            return pred_bull / den * 100.0
+        return pred_heif / den * 100.0
+    return float(vals_get(pred_vals, metric_name, nmap) or 0.0)
+
+
+def _run_farm_backtesting(
+    farm_name: str,
+    metric_name: str,
+    bt_months: int,
+    bt_horizon: int,
+    complete_only: bool,
+    params: dict,
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    subdivisions = _subdivisions_for_farm(farm_name, ready_only=True)
+    if not subdivisions:
+        return pd.DataFrame(), pd.DataFrame(), {"reason": "no_ready_subdivisions"}
+
+    tables_by_sub: dict[str, dict[str, pd.DataFrame]] = {}
+    base_dates: list[date] = []
+    for sub in subdivisions:
+        tables = _load_farm_tables_from_db(sub)
+        tables_by_sub[sub] = tables
+        base_dates.append(latest_data_date(tables))
+
+    if not base_dates:
+        return pd.DataFrame(), pd.DataFrame(), {"reason": "no_data"}
+
+    base_date_bt = max(base_dates)
+    last_me_bt = month_end(base_date_bt.year, base_date_bt.month)
+    target_months = [_month_end_shift(last_me_bt, -i) for i in range(bt_months - 1, -1, -1)]
+
+    farm_rows: list[dict[str, Any]] = []
+    sub_rows: list[dict[str, Any]] = []
+
+    steps_total = max(1, len(target_months) * len(subdivisions))
+    step_idx = 0
+    skipped_months = 0
+    skipped_sub_months = 0
+
+    for target_me in target_months:
+        as_of_me = _month_end_shift(target_me, -int(bt_horizon))
+
+        month_pred = 0.0
+        month_fact = 0.0
+        month_pred_bulls = 0.0
+        month_pred_heif = 0.0
+        month_fact_bulls = 0.0
+        month_fact_heif = 0.0
+        used_subs = 0
+
+        for sub in subdivisions:
+            step_idx += 1
+            if progress_cb is not None:
+                progress_cb(step_idx, steps_total, f"{farm_name} / {sub} / {_month_label(target_me)}")
+
+            tables = tables_by_sub[sub]
+            calv_df = tables.get("calv", pd.DataFrame())
+            ins_df = tables.get("ins", pd.DataFrame())
+            is_complete = _is_fact_month_complete_for_subdivision(calv_df, target_me)
+            if complete_only and not is_complete:
+                skipped_sub_months += 1
+                continue
+
+            pred_vals = compute_forecast_dynamic_from_tables(
+                tables,
+                target_me,
+                overrides=params,
+                as_of_date=as_of_me,
+            ) or {}
+            nmap = {norm_label(k): v for k, v in pred_vals.items()}
+            pred_val = float(_pred_metric_value_for_backtest(pred_vals, metric_name, nmap))
+            fact_stats = _actual_birth_stats_month_from_tables(calv_df, ins_df, target_me, as_of_date=None)
+            fact_val = float(fact_stats.get(metric_name, 0.0))
+
+            pred_bulls = float(vals_get(pred_vals, "Ожидаемые бычки (условно)", nmap) or 0.0)
+            pred_heifers = float(vals_get(pred_vals, "Ожидаемые тёлочки (условно)", nmap) or 0.0)
+            fact_bulls = float(fact_stats.get("Ожидаемые бычки (условно)", 0.0))
+            fact_heifers = float(fact_stats.get("Ожидаемые тёлочки (условно)", 0.0))
+
+            if metric_name in FARM_PERCENT_TARGETS:
+                month_pred_bulls += pred_bulls
+                month_pred_heif += pred_heifers
+                month_fact_bulls += fact_bulls
+                month_fact_heif += fact_heifers
+                fact_weight = fact_bulls + fact_heifers
+            else:
+                month_pred += pred_val
+                month_fact += fact_val
+                fact_weight = abs(fact_val)
+
+            err_sub = pred_val - fact_val
+            ape_sub = (abs(err_sub) / fact_val * 100.0) if fact_val > 0 else None
+            sub_rows.append(
+                {
+                    "Месяц факта": target_me.strftime("%Y-%m"),
+                    "as-of (на дату)": as_of_me.strftime("%Y-%m"),
+                    "Подразделение": sub,
+                    "Показатель": metric_name,
+                    "Прогноз": round(pred_val, 1),
+                    "Факт": round(fact_val, 1),
+                    "Ошибка": round(err_sub, 1),
+                    "APE, %": None if ape_sub is None else round(float(ape_sub), 1),
+                    "Полный месяц факта": bool(is_complete),
+                    "Вес по факту": float(fact_weight),
+                }
+            )
+            used_subs += 1
+
+        if used_subs == 0:
+            skipped_months += 1
+            continue
+
+        if metric_name in FARM_PERCENT_TARGETS:
+            den_pred = month_pred_bulls + month_pred_heif
+            den_fact = month_fact_bulls + month_fact_heif
+            if metric_name == "Доля бычков среди рождений, %":
+                month_pred = (month_pred_bulls / den_pred * 100.0) if den_pred > 0 else 0.0
+                month_fact = (month_fact_bulls / den_fact * 100.0) if den_fact > 0 else 0.0
+            else:
+                month_pred = (month_pred_heif / den_pred * 100.0) if den_pred > 0 else 0.0
+                month_fact = (month_fact_heif / den_fact * 100.0) if den_fact > 0 else 0.0
+
+        err = month_pred - month_fact
+        ape = (abs(err) / month_fact * 100.0) if month_fact > 0 else None
+        farm_rows.append(
+            {
+                "Месяц факта": target_me.strftime("%Y-%m"),
+                "as-of (на дату)": as_of_me.strftime("%Y-%m"),
+                "Показатель": metric_name,
+                "Прогноз": round(month_pred, 1),
+                "Факт": round(month_fact, 1),
+                "Ошибка": round(err, 1),
+                "APE, %": None if ape is None else round(float(ape), 1),
+                "Подразделений в расчёте": int(used_subs),
+            }
+        )
+
+    bt_df = pd.DataFrame(farm_rows)
+    sub_df = pd.DataFrame(sub_rows)
+    if sub_df.empty:
+        summary = {
+            "farm": farm_name,
+            "metric": metric_name,
+            "months": int(bt_months),
+            "horizon": int(bt_horizon),
+            "complete_only": bool(complete_only),
+            "skipped_months": int(skipped_months),
+            "skipped_sub_months": int(skipped_sub_months),
+            "subdivisions_n": len(subdivisions),
+        }
+        return bt_df, pd.DataFrame(), summary
+
+    metric_cols = sub_df.copy()
+    metric_cols["Ошибка"] = pd.to_numeric(metric_cols["Ошибка"], errors="coerce")
+    metric_cols["APE, %"] = pd.to_numeric(metric_cols["APE, %"], errors="coerce")
+    metric_cols["Вес по факту"] = pd.to_numeric(metric_cols["Вес по факту"], errors="coerce").fillna(0.0)
+
+    sub_summary = (
+        metric_cols.groupby("Подразделение", as_index=False)
+        .agg(
+            n_months=("Месяц факта", "count"),
+            mae=("Ошибка", lambda x: float(pd.to_numeric(x, errors="coerce").abs().mean())),
+            bias=("Ошибка", lambda x: float(pd.to_numeric(x, errors="coerce").mean())),
+            mape=("APE, %", lambda x: float(pd.to_numeric(x, errors="coerce").dropna().mean()) if not pd.to_numeric(x, errors="coerce").dropna().empty else float("nan")),
+            weight_raw=("Вес по факту", "sum"),
+        )
+    )
+
+    w_sum = float(pd.to_numeric(sub_summary["weight_raw"], errors="coerce").fillna(0.0).sum())
+    if w_sum <= 1e-9:
+        sub_summary["Вес, %"] = 100.0 / max(1, len(sub_summary))
+    else:
+        sub_summary["Вес, %"] = pd.to_numeric(sub_summary["weight_raw"], errors="coerce").fillna(0.0) / w_sum * 100.0
+
+    sub_summary["MAE"] = pd.to_numeric(sub_summary["mae"], errors="coerce")
+    sub_summary["Bias"] = pd.to_numeric(sub_summary["bias"], errors="coerce")
+    sub_summary["MAPE, %"] = pd.to_numeric(sub_summary["mape"], errors="coerce")
+    sub_summary = sub_summary[["Подразделение", "n_months", "Вес, %", "MAE", "MAPE, %", "Bias"]].sort_values(
+        ["Вес, %", "Подразделение"],
+        ascending=[False, True],
+        kind="mergesort",
+    )
+
+    weights = pd.to_numeric(sub_summary["Вес, %"], errors="coerce").fillna(0.0) / 100.0
+    weighted_mae = float((weights * pd.to_numeric(sub_summary["MAE"], errors="coerce").fillna(0.0)).sum())
+    weighted_bias = float((weights * pd.to_numeric(sub_summary["Bias"], errors="coerce").fillna(0.0)).sum())
+
+    mape_vals = pd.to_numeric(sub_summary["MAPE, %"], errors="coerce")
+    mape_mask = mape_vals.notna()
+    if bool(mape_mask.any()):
+        w_mape = weights[mape_mask]
+        w_norm = float(w_mape.sum())
+        weighted_mape = float(((w_mape / w_norm) * mape_vals[mape_mask]).sum()) if w_norm > 1e-9 else None
+    else:
+        weighted_mape = None
+
+    summary = {
+        "farm": farm_name,
+        "metric": metric_name,
+        "months": int(bt_months),
+        "horizon": int(bt_horizon),
+        "complete_only": bool(complete_only),
+        "skipped_months": int(skipped_months),
+        "skipped_sub_months": int(skipped_sub_months),
+        "subdivisions_n": len(subdivisions),
+        "weighted_mae": weighted_mae,
+        "weighted_mape": weighted_mape,
+        "weighted_bias": weighted_bias,
+    }
+    return bt_df, sub_summary.reset_index(drop=True), summary
+
+
 def _compute_farm_forecast(
     farm_name: str,
     tables: dict[str, pd.DataFrame],
@@ -1990,6 +2661,147 @@ def _build_transfer_recommendations(
     return rec_df, flows, snap_final, snap_monthly_df, meta
 
 
+def _render_farm_backtesting_panel(default_farm: str | None = None) -> None:
+    farm_status_df = _farm_status_df_from_db()
+    ready_farms = (
+        farm_status_df.loc[farm_status_df["Статус"] == "готово", "Хозяйство"].astype(str).tolist()
+        if not farm_status_df.empty
+        else []
+    )
+    if not ready_farms:
+        return
+
+    default_name = str(default_farm or "").strip()
+    default_index = ready_farms.index(default_name) if default_name in ready_farms else 0
+
+    with st.expander("Backtesting по хозяйству", expanded=False):
+        st.session_state.setdefault("tab3_backtest_df", None)
+        st.session_state.setdefault("tab3_backtest_sub_df", None)
+        st.session_state.setdefault("tab3_backtest_cfg", None)
+
+        bt_farm = st.selectbox(
+            "Хозяйство для backtesting",
+            ready_farms,
+            index=default_index,
+            key="tab3_bt_farm_select",
+        )
+        bt_target = st.selectbox(
+            "Показатель для backtesting",
+            FARM_BACKTEST_TARGETS,
+            index=0,
+            key="tab3_bt_target",
+        )
+
+        c_bt1, c_bt2 = st.columns(2)
+        with c_bt1:
+            bt_months = st.slider(
+                "Глубина истории (последние месяцы)",
+                min_value=3,
+                max_value=24,
+                value=6,
+                step=1,
+                key="tab3_bt_months",
+            )
+        with c_bt2:
+            bt_horizon = st.slider(
+                "Горизонт as-of (месяцев назад)",
+                min_value=1,
+                max_value=6,
+                value=2,
+                step=1,
+                key="tab3_bt_horizon",
+            )
+        bt_complete_only = st.checkbox(
+            "Учитывать только полные месяцы факта",
+            value=True,
+            key="tab3_bt_complete_only",
+        )
+
+        if st.button("Запустить backtesting по хозяйству", key="tab3_btn_backtest", use_container_width=True):
+            base_params_bt = apply_admin_overrides(get_param_source())
+            bt_override = _farm_param_overrides_state().get(bt_farm) if _is_admin_mode() else None
+            farm_params_bt = _build_farm_params(base_params_bt, bt_override)
+            bt_progress = st.progress(0.0)
+            bt_status = st.empty()
+
+            def _bt_progress_cb(step_idx: int, steps_total: int, msg: str) -> None:
+                bt_progress.progress(step_idx / max(1, steps_total))
+                bt_status.caption(f"Backtesting: {msg}")
+
+            with st.spinner("Считаю backtesting по подразделениям и агрегирую метрики..."):
+                bt_df, bt_sub_df, bt_summary = _run_farm_backtesting(
+                    farm_name=bt_farm,
+                    metric_name=bt_target,
+                    bt_months=int(bt_months),
+                    bt_horizon=int(bt_horizon),
+                    complete_only=bool(bt_complete_only),
+                    params=farm_params_bt,
+                    progress_cb=_bt_progress_cb,
+                )
+
+            bt_progress.empty()
+            bt_status.empty()
+
+            st.session_state["tab3_backtest_df"] = bt_df
+            st.session_state["tab3_backtest_sub_df"] = bt_sub_df
+            st.session_state["tab3_backtest_cfg"] = {
+                "farm": bt_farm,
+                "metric": bt_target,
+                "months": int(bt_months),
+                "horizon": int(bt_horizon),
+                "complete_only": bool(bt_complete_only),
+                **(bt_summary or {}),
+            }
+
+        bt_df = st.session_state.get("tab3_backtest_df")
+        bt_sub_df = st.session_state.get("tab3_backtest_sub_df")
+        bt_cfg = st.session_state.get("tab3_backtest_cfg") or {}
+        if str(bt_cfg.get("farm", "")) != str(bt_farm):
+            st.info("Выбери хозяйство и нажми запуск, чтобы увидеть метрики для него.")
+            return
+
+        if not isinstance(bt_df, pd.DataFrame) or bt_df.empty:
+            st.info("Нажми «Запустить backtesting по хозяйству», чтобы увидеть метрики.")
+            return
+
+        metric_for_view = str(bt_cfg.get("metric") or bt_target)
+        is_pct = metric_for_view in FARM_PERCENT_TARGETS
+        mae_label = "MAE, п.п." if is_pct else "MAE, гол."
+        bias_label = "Bias, п.п." if is_pct else "Bias, гол."
+
+        mae_val = bt_cfg.get("weighted_mae")
+        mape_val = bt_cfg.get("weighted_mape")
+        bias_val = bt_cfg.get("weighted_bias")
+        if mae_val is None:
+            mae_val = float(pd.to_numeric(bt_df["Ошибка"], errors="coerce").abs().mean())
+        if bias_val is None:
+            bias_val = float(pd.to_numeric(bt_df["Ошибка"], errors="coerce").mean())
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric(mae_label, "—" if mae_val is None else f"{float(mae_val):.1f}")
+        m2.metric("MAPE, %", "—" if mape_val is None else f"{float(mape_val):.1f}")
+        m3.metric(bias_label, "—" if bias_val is None else f"{float(bias_val):.1f}")
+
+        skipped_months = int(bt_cfg.get("skipped_months", 0) or 0)
+        skipped_sub_months = int(bt_cfg.get("skipped_sub_months", 0) or 0)
+        st.caption(
+            f"Агрегация метрик выполнена по весам подразделений от факта. "
+            f"Пропущено месяцев: {skipped_months}, пропущено суб-месяцев: {skipped_sub_months}."
+        )
+
+        st.dataframe(bt_df, use_container_width=True, hide_index=True)
+        chart_df = bt_df.set_index("Месяц факта")[["Прогноз", "Факт"]]
+        st.line_chart(chart_df)
+
+        if isinstance(bt_sub_df, pd.DataFrame) and not bt_sub_df.empty:
+            st.markdown("**Вклад подразделений в итоговые метрики**")
+            st.dataframe(
+                bt_sub_df.style.format(fmt_cell),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 def _render_results(monthly_all: pd.DataFrame, farm_infos: list[dict[str, Any]], target_month_end: date) -> None:
     _ = target_month_end
     farms = sorted(monthly_all["Хозяйство"].dropna().astype(str).unique().tolist())
@@ -2225,7 +3037,10 @@ def render_tab3_farm() -> None:
         default=ready_farms[:1],
         key="tab3_selected_farms",
     )
-    _farm_param_editor_block(sorted(set(ready_farms)), apply_admin_overrides(get_param_source()))
+    if _is_admin_mode():
+        _farm_param_editor_block(sorted(set(ready_farms)), apply_admin_overrides(get_param_source()))
+    else:
+        st.caption("Изменение параметров доступно только в админ-режиме.")
 
     c_run, c_cache = st.columns([3, 2])
     run_clicked = c_run.button("Посчитать прогноз по хозяйствам", key="tab3_run_db", use_container_width=True)
@@ -2243,7 +3058,7 @@ def render_tab3_farm() -> None:
             st.error("Выбери хотя бы одно хозяйство.")
         else:
             base_params = apply_admin_overrides(get_param_source())
-            all_farm_overrides = _farm_param_overrides_state()
+            all_farm_overrides = _farm_param_overrides_state() if _is_admin_mode() else {}
             all_monthly: list[pd.DataFrame] = []
             farm_infos: list[dict[str, Any]] = []
             errors: list[str] = []
@@ -2386,6 +3201,9 @@ def render_tab3_farm() -> None:
                 st.session_state.pop("tab3_monthly_all", None)
                 st.session_state.pop("tab3_farm_infos", None)
                 st.session_state.pop("tab3_target_month_end", None)
+
+    default_bt_farm = selected_farms[0] if selected_farms else (ready_farms[0] if ready_farms else None)
+    _render_farm_backtesting_panel(default_farm=default_bt_farm)
 
     monthly_all = st.session_state.get("tab3_monthly_all")
     farm_infos = st.session_state.get("tab3_farm_infos")
