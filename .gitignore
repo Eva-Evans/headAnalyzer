@@ -2,3 +2,5 @@ data/
 worklog_*.txt
 .venv/
 venv/
+__pycache__/
+*.py[cod]
