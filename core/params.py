@@ -472,7 +472,14 @@ def apply_admin_overrides(
     out = _normalize_param_aliases(base_params)
 
     if bool(st.session_state.get("is_admin", False)):
-        ov = runtime_overrides if runtime_overrides is not None else st.session_state.get("runtime_overrides")
+        if runtime_overrides is not None:
+            ov = runtime_overrides
+        else:
+            by_scope = st.session_state.get("runtime_overrides_by_scope")
+            if isinstance(by_scope, dict):
+                ov = by_scope.get("__global__")
+            else:
+                ov = None
         ov = _normalize_param_aliases(ov)
         if isinstance(ov, dict) and ov:
             _deep_merge(out, ov)

@@ -1,2 +1,4 @@
 data/
 worklog_*.txt
+.venv/
+venv/

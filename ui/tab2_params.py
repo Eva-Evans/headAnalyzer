@@ -319,9 +319,6 @@ def _tab2_overrides_by_scope_state() -> Dict[str, Dict[str, Any]]:
         for k, v in raw.items():
             if isinstance(v, dict):
                 out[str(k)] = v
-    legacy = st.session_state.get("runtime_overrides")
-    if isinstance(legacy, dict) and legacy and TAB2_GLOBAL_SCOPE not in out:
-        out[TAB2_GLOBAL_SCOPE] = legacy
     st.session_state["runtime_overrides_by_scope"] = out
     return out
 
@@ -334,7 +331,6 @@ def _tab2_set_scope_overrides(scope_key: str, overrides: Dict[str, Any]) -> None
     else:
         by_scope.pop(str(scope_key), None)
     st.session_state["runtime_overrides_by_scope"] = by_scope
-    st.session_state["runtime_overrides"] = clean
 
 
 def render_tab2_params() -> None:

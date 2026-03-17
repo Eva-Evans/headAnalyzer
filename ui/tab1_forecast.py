@@ -379,12 +379,15 @@ def _clear_tab1_outputs_state() -> None:
 def _tab1_runtime_overrides_for_selected_subdivision(subdivision_name: str | None) -> dict[str, Any]:
     sub = str(subdivision_name or "").strip()
     by_scope = st.session_state.get("runtime_overrides_by_scope")
-    if sub and isinstance(by_scope, dict):
-        cand = by_scope.get(f"sub:{sub}")
-        if isinstance(cand, dict):
-            return cand
-    legacy = st.session_state.get("runtime_overrides")
-    return legacy if isinstance(legacy, dict) else {}
+    if isinstance(by_scope, dict):
+        if sub:
+            cand = by_scope.get(f"sub:{sub}")
+            if isinstance(cand, dict):
+                return cand
+        global_ov = by_scope.get("__global__")
+        if isinstance(global_ov, dict):
+            return global_ov
+    return {}
 
 
 def _tab1_farm_name_for_subdivision(subdivision_name: str) -> str:

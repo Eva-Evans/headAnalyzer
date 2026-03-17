@@ -1839,11 +1839,6 @@ def build_early_realization_plan(
 
     return out
 
-def build_initial_state_legacy(*args, **kwargs) -> HerdState:
-    """Совместимость со старым API: проксирует вызов в build_initial_state."""
-    return build_initial_state(*args, **kwargs)
-
-
                                                               
                                                               
 

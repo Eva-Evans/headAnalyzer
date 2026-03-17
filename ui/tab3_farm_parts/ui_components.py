@@ -498,7 +498,7 @@ def _capacity_default_groups() -> list[str]:
         "Тёлки 3–8 мес",
         "Тёлки ≥9 мес",
     ]
-    legacy_groups = [
+    source_alias_groups = [
         "коровы дойные",
         "коровы сухостой",
         "сухостой",
@@ -511,7 +511,7 @@ def _capacity_default_groups() -> list[str]:
     ]
     seen: set[str] = set()
     out: list[str] = []
-    for g in [*model_groups, *legacy_groups]:
+    for g in [*model_groups, *source_alias_groups]:
         k = str(g).strip().upper().replace("Ё", "Е")
         if k in seen:
             continue
@@ -1643,7 +1643,13 @@ def render_tab3_farm() -> None:
                         if isinstance(ov, dict) and ov
                     }
                     farm_params_fallback = _build_farm_params(base_params, farm_override)
-                    runtime_ov = st.session_state.get("runtime_overrides") if _is_admin_mode() else {}
+                    runtime_ov = {}
+                    if _is_admin_mode():
+                        by_scope = st.session_state.get("runtime_overrides_by_scope")
+                        if isinstance(by_scope, dict):
+                            global_ov = by_scope.get("__global__")
+                            if isinstance(global_ov, dict):
+                                runtime_ov = global_ov
                     ph_farm = _params_hash(
                         {
                             "mode": "per_subdivision_params.v12",
