@@ -55,21 +55,22 @@ def lact_cat_from_count(n_calvings: int) -> int:
 
 
 def _safe_to_date(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce").dt.date
+    return pd.to_datetime(s, errors="coerce", dayfirst=True).dt.date
 
 
 def _merge_asof_by_reg(left: pd.DataFrame, right: pd.DataFrame, left_on: str, right_on: str) -> pd.DataFrame:
     left = left.copy()
     right = right.copy()
 
-    left[left_on] = pd.to_datetime(left[left_on], errors="coerce")
-    right[right_on] = pd.to_datetime(right[right_on], errors="coerce")
+    left[left_on] = pd.to_datetime(left[left_on], errors="coerce", dayfirst=True)
+    right[right_on] = pd.to_datetime(right[right_on], errors="coerce", dayfirst=True)
 
     left = left.dropna(subset=["reg_s", left_on]).copy()
     right = right.dropna(subset=["reg_s", right_on]).copy()
 
-    left = left.sort_values(["reg_s", left_on], kind="mergesort")
-    right = right.sort_values(["reg_s", right_on], kind="mergesort")
+    # For merge_asof pandas requires global sorting by merge key (date/time) first.
+    left = left.sort_values([left_on, "reg_s"], kind="mergesort")
+    right = right.sort_values([right_on, "reg_s"], kind="mergesort")
 
     return pd.merge_asof(
         left,
@@ -95,7 +96,7 @@ class RuntimeParams:
 
 def _compute_conception_params(ins: pd.DataFrame):
     ins = ins.copy()
-    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce")
+    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce", dayfirst=True)
     ins["result_norm"] = ins["result"].apply(norm_result)
     ins["lact"] = pd.to_numeric(ins["lact"], errors="coerce").fillna(0).astype(int)
     ins["dim_age"] = pd.to_numeric(ins["dim_age"], errors="coerce")
@@ -137,7 +138,7 @@ def _compute_gestation_days(calv: pd.DataFrame, ins: pd.DataFrame) -> Tuple[floa
     ins = ins.copy()
 
     calv["event_type_n"] = calv["event_type"].apply(norm_event_type)
-    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce")
+    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce", dayfirst=True)
     calv["mother_reg_s"] = calv["mother_reg"].apply(norm_id)
 
     births = calv[(calv["event_type_n"] == "РОЖДЕН") & (calv["mother_reg_s"] != "") & (calv["event_date"].notna())].copy()
@@ -148,7 +149,7 @@ def _compute_gestation_days(calv: pd.DataFrame, ins: pd.DataFrame) -> Tuple[floa
         columns={"mother_reg_s": "reg_s", "event_date": "calving_dt"}
     )
 
-    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce")
+    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce", dayfirst=True)
     ins["result_norm"] = ins["result"].apply(norm_result)
     ins["reg_s"] = ins["reg"].apply(norm_id)
 
@@ -186,7 +187,7 @@ def _compute_dry_days(calv: pd.DataFrame, dry: pd.DataFrame) -> Tuple[int, dict]
     dry = dry.copy()
 
     calv["event_type_n"] = calv["event_type"].apply(norm_event_type)
-    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce")
+    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce", dayfirst=True)
     calv["mother_reg_s"] = calv["mother_reg"].apply(norm_id)
 
     births = calv[(calv["event_type_n"] == "РОЖДЕН") & (calv["mother_reg_s"] != "") & (calv["event_date"].notna())].copy()
@@ -197,7 +198,7 @@ def _compute_dry_days(calv: pd.DataFrame, dry: pd.DataFrame) -> Tuple[int, dict]
         columns={"mother_reg_s": "reg_s", "event_date": "calving_dt"}
     )
 
-    dry["event_date"] = pd.to_datetime(dry["event_date"], errors="coerce")
+    dry["event_date"] = pd.to_datetime(dry["event_date"], errors="coerce", dayfirst=True)
     dry["reg_s"] = dry["reg"].apply(norm_id)
     dry = dry[(dry["reg_s"] != "") & (dry["event_date"].notna())].copy()
     if dry.empty:
@@ -235,7 +236,7 @@ def _compute_disposal_params(calv: pd.DataFrame, disp: pd.DataFrame) -> Tuple[di
     disp = disp.copy()
 
     calv["event_type_n"] = calv["event_type"].apply(norm_event_type)
-    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce")
+    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce", dayfirst=True)
     calv["mother_reg_s"] = calv["mother_reg"].apply(norm_id)
 
     calv_events = calv[(calv["event_type_n"] == "РОЖДЕН") & (calv["mother_reg_s"] != "") & (calv["event_date"].notna())].copy()
@@ -246,7 +247,7 @@ def _compute_disposal_params(calv: pd.DataFrame, disp: pd.DataFrame) -> Tuple[di
     calv_counts = calv_events.groupby("reg_s")["calving_dt"].count().to_dict()
     calv_events = calv_events.drop_duplicates()
 
-    disp["event_date"] = pd.to_datetime(disp["event_date"], errors="coerce")
+    disp["event_date"] = pd.to_datetime(disp["event_date"], errors="coerce", dayfirst=True)
     disp["reg_s"] = disp["reg"].apply(norm_id)
     disp["reason"] = disp.get("disposal_reason", "").astype(str).str.lower().str.replace("ё", "е")
     disp = disp[(disp["reg_s"] != "") & (disp["event_date"].notna())].copy()
@@ -309,11 +310,34 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
     ins = ins.copy()
     calv = calv.copy()
 
-    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce")
+    ins["event_date"] = pd.to_datetime(ins["event_date"], errors="coerce", dayfirst=True)
     ins["result_norm"] = ins["result"].apply(norm_result)
     ins["lact"] = pd.to_numeric(ins["lact"], errors="coerce").fillna(0).astype(int)
     ins["dim_age"] = pd.to_numeric(ins["dim_age"], errors="coerce")
     ins["reg_s"] = ins["reg"].apply(norm_id)
+
+    def _month_factors(df: pd.DataFrame) -> dict[int, float]:
+        work = df[(df["event_date"].notna()) & (df["reg_s"] != "")].copy()
+        if work.empty:
+            return {m: 1.0 for m in range(1, 13)}
+        work["month"] = work["event_date"].dt.month.astype("Int64")
+        work["is_p"] = (work["result_norm"] == "P").astype(float)
+        overall_rate = float(work["is_p"].mean())
+        if not (overall_rate > 1e-9):
+            return {m: 1.0 for m in range(1, 13)}
+
+        factors: dict[int, float] = {}
+        for month in range(1, 13):
+            part = work.loc[work["month"] == month]
+            n = int(len(part))
+            if n <= 0:
+                factors[month] = 1.0
+                continue
+            month_rate = float(part["is_p"].mean())
+            raw = month_rate / overall_rate if overall_rate > 1e-9 else 1.0
+            shrink = min(1.0, n / 80.0)
+            factors[month] = float(max(0.75, min(1.25, 1.0 + shrink * (raw - 1.0))))
+        return factors
 
                
     def mean_interval(df: pd.DataFrame) -> float:
@@ -327,9 +351,11 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
 
     cow_ai_interval = mean_interval(ins[ins["lact"] > 0])
     heifer_ai_interval = mean_interval(ins[ins["lact"] <= 0])
+    cow_conception_month_factors = _month_factors(ins[ins["lact"] > 0])
+    heifer_conception_month_factors = _month_factors(ins[ins["lact"] <= 0])
 
     calv["event_type_n"] = calv["event_type"].apply(norm_event_type)
-    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce")
+    calv["event_date"] = pd.to_datetime(calv["event_date"], errors="coerce", dayfirst=True)
     calv["mother_reg_s"] = calv["mother_reg"].apply(norm_id)
     births = calv[(calv["event_type_n"] == "РОЖДЕН") & (calv["mother_reg_s"] != "") & (calv["event_date"].notna())].copy()
     births = births.rename(columns={"mother_reg_s": "reg_s", "event_date": "calving_dt"})[["reg_s", "calving_dt"]]
@@ -412,6 +438,8 @@ def _compute_insemination_params(ins: pd.DataFrame, calv: pd.DataFrame):
         heifer_first_ai_age_days=_fallback(heifer_first_ai_age, DEFAULT_INSEMINATION_PARAMS.heifer_first_ai_age_days),
         heifer_ai_interval_days=_fallback(heifer_ai_interval, DEFAULT_INSEMINATION_PARAMS.heifer_ai_interval_days),
         heifer_services_per_conception=_fallback(heifer_spc, DEFAULT_INSEMINATION_PARAMS.heifer_services_per_conception),
+        cow_conception_month_factors=cow_conception_month_factors,
+        heifer_conception_month_factors=heifer_conception_month_factors,
     )
 
 
@@ -470,7 +498,7 @@ def _compute_pending_calvings_from_history(
         return PendingCalvings(Counter(), Counter(), {"n_total": 0, "n_cows": 0, "n_heifers": 0})
 
     df = ins.copy()
-    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date
+    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce", dayfirst=True).dt.date
     df["result_norm"] = df["result"].apply(norm_result)
     df["reg_s"] = df["reg"].apply(norm_id)
     df["lact_n"] = pd.to_numeric(df.get("lact", 0), errors="coerce").fillna(0).astype(int)

@@ -85,6 +85,8 @@ class InseminationParams:
     heifer_first_ai_age_days: float
     heifer_ai_interval_days: float
     heifer_services_per_conception: float
+    cow_conception_month_factors: Dict[int, float]
+    heifer_conception_month_factors: Dict[int, float]
 
 
 INSEMINATION_PARAMS = InseminationParams(
@@ -99,4 +101,6 @@ INSEMINATION_PARAMS = InseminationParams(
     heifer_first_ai_age_days=378.5310701203558,
     heifer_ai_interval_days=25.258195726080622,
     heifer_services_per_conception=1.9456635318704285,
+    cow_conception_month_factors={m: 1.0 for m in range(1, 13)},
+    heifer_conception_month_factors={m: 1.0 for m in range(1, 13)},
 )

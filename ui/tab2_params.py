@@ -6,10 +6,18 @@ from typing import Any, Dict, List, Union
 import pandas as pd
 import streamlit as st
 
-from core.params import get_param_source, apply_admin_overrides, get_model_default_params
+from core.params import (
+    apply_admin_overrides,
+    get_model_default_params,
+    get_or_compute_subdivision_params,
+    get_param_source,
+    inject_live_semen_params,
+)
+from ui.tab3_farm_parts.storage import _load_farm_tables_from_db
 
 
 Token = Union[str, int]
+TAB2_GLOBAL_SCOPE = "__global__"
 
 
 def _dict_get_any_key(d: Any, key: Token) -> Any:
@@ -148,6 +156,48 @@ def _render_grouped_readonly(df_all: pd.DataFrame) -> None:
         )
 
 
+def _clear_tab1_result_state() -> None:
+    for key in (
+        "last_result_df",
+        "last_overflow_df",
+        "last_month_ends",
+        "last_realization_view",
+        "last_result_scope_label",
+        "last_excel_bytes",
+        "backtest_df",
+        "backtest_cfg",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _ensure_semen_complements(overrides: Dict[str, Any]) -> Dict[str, Any]:
+    out = overrides if isinstance(overrides, dict) else {}
+
+    usage = out.get("SEMEN_USAGE_SHARES")
+    if isinstance(usage, dict):
+        if "cow_sex" in usage and "cow_trad" not in usage:
+            usage["cow_trad"] = max(0.0, 1.0 - float(usage["cow_sex"]))
+        if "cow_trad" in usage and "cow_sex" not in usage:
+            usage["cow_sex"] = max(0.0, 1.0 - float(usage["cow_trad"]))
+        if "heifer_sex" in usage and "heifer_trad" not in usage:
+            usage["heifer_trad"] = max(0.0, 1.0 - float(usage["heifer_sex"]))
+        if "heifer_trad" in usage and "heifer_sex" not in usage:
+            usage["heifer_sex"] = max(0.0, 1.0 - float(usage["heifer_trad"]))
+
+    ratios = out.get("SEMEN_SEX_RATIOS")
+    if isinstance(ratios, dict):
+        for semen_key in ("trad", "sex"):
+            part = ratios.get(semen_key)
+            if not isinstance(part, dict):
+                continue
+            if "heifer_share" in part and "bull_share" not in part:
+                part["bull_share"] = max(0.0, 1.0 - float(part["heifer_share"]))
+            if "bull_share" in part and "heifer_share" not in part:
+                part["heifer_share"] = max(0.0, 1.0 - float(part["bull_share"]))
+
+    return out
+
+
 def _build_specs(final: dict) -> List[Spec]:
     specs: List[Spec] = []
 
@@ -157,7 +207,6 @@ def _build_specs(final: dict) -> List[Spec]:
                         
     cp = final.get("CONCEPTION_PARAMS")
     if isinstance(cp, dict):
-        add("Стельность", ["CONCEPTION_PARAMS", "avg_cow_dim_global"], "Коровы: средний DIM наступления стельности (дн.)")
         add("Стельность", ["CONCEPTION_PARAMS", "avg_heifer_age_days"], "Тёлки: средний возраст наступления стельности (дн.)")
 
         by_lact = cp.get("avg_cow_dim_by_lact")
@@ -218,20 +267,21 @@ def _build_specs(final: dict) -> List[Spec]:
                     kk = int(k)
                 except Exception:
                     continue
+                add(
+                    "Выбытие",
+                    ["DISPOSAL_PARAMS", "by_lact", kk, "n"],
+                    f"Выбытие: вес лактации — {_lact_label(kk)}",
+                )
                 add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "median_dim"], f"Выбытие: DIM (медиана) — {_lact_label(kk)} (дн.)")
                 add("Выбытие", ["DISPOSAL_PARAMS", "by_lact", kk, "mean_dim"], f"Выбытие: DIM (среднее) — {_lact_label(kk)} (дн.)")
 
                                                   
     sus = final.get("SEMEN_USAGE_SHARES")
     if isinstance(sus, dict):
-        if "cow_trad" in sus:
-            add("Семя (использование) — Коровы", ["SEMEN_USAGE_SHARES", "cow_trad"], "Доля обычного (доля)")
         if "cow_sex" in sus:
-            add("Семя (использование) — Коровы", ["SEMEN_USAGE_SHARES", "cow_sex"], "Доля сексированного (доля)")
-        if "heifer_trad" in sus:
-            add("Семя (использование) — Тёлки", ["SEMEN_USAGE_SHARES", "heifer_trad"], "Доля обычного (доля)")
+            add("Семя (использование)", ["SEMEN_USAGE_SHARES", "cow_sex"], "Коровы: доля сексированного семени (доля)")
         if "heifer_sex" in sus:
-            add("Семя (использование) — Тёлки", ["SEMEN_USAGE_SHARES", "heifer_sex"], "Доля сексированного (доля)")
+            add("Семя (использование)", ["SEMEN_USAGE_SHARES", "heifer_sex"], "Тёлки: доля сексированного семени (доля)")
 
                                                         
     ssr = final.get("SEMEN_SEX_RATIOS")
@@ -243,10 +293,8 @@ def _build_specs(final: dict) -> List[Spec]:
         sex_has = isinstance(sex, dict) or hasattr(sex, "bull_share") or hasattr(sex, "heifer_share")
 
         if trad_has:
-            add("Пол телят", ["SEMEN_SEX_RATIOS", "trad", "bull_share"], "Обычное семя: доля бычков (доля)")
             add("Пол телят", ["SEMEN_SEX_RATIOS", "trad", "heifer_share"], "Обычное семя: доля тёлочек (доля)")
         if sex_has:
-            add("Пол телят", ["SEMEN_SEX_RATIOS", "sex", "bull_share"], "Сексированное семя: доля бычков (доля)")
             add("Пол телят", ["SEMEN_SEX_RATIOS", "sex", "heifer_share"], "Сексированное семя: доля тёлочек (доля)")
 
                                      
@@ -256,11 +304,71 @@ def _build_specs(final: dict) -> List[Spec]:
     return specs
 
 
+def _tab2_scope_from_tab1() -> tuple[str, str]:
+    tab1_sub = str(st.session_state.get("tab1_db_subdivision_select", "") or "").strip()
+    tab1_data_mode = str(st.session_state.get("data_mode_radio", "") or "")
+    if tab1_sub and tab1_data_mode.startswith("Использовать данные из БД"):
+        return f"sub:{tab1_sub}", tab1_sub
+    return TAB2_GLOBAL_SCOPE, ""
+
+
+def _tab2_overrides_by_scope_state() -> Dict[str, Dict[str, Any]]:
+    raw = st.session_state.get("runtime_overrides_by_scope")
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                out[str(k)] = v
+    legacy = st.session_state.get("runtime_overrides")
+    if isinstance(legacy, dict) and legacy and TAB2_GLOBAL_SCOPE not in out:
+        out[TAB2_GLOBAL_SCOPE] = legacy
+    st.session_state["runtime_overrides_by_scope"] = out
+    return out
+
+
+def _tab2_set_scope_overrides(scope_key: str, overrides: Dict[str, Any]) -> None:
+    by_scope = _tab2_overrides_by_scope_state()
+    clean = overrides if isinstance(overrides, dict) else {}
+    if clean:
+        by_scope[str(scope_key)] = clean
+    else:
+        by_scope.pop(str(scope_key), None)
+    st.session_state["runtime_overrides_by_scope"] = by_scope
+    st.session_state["runtime_overrides"] = clean
+
+
 def render_tab2_params() -> None:
     st.subheader("Параметры модели")
 
+    scope_key, tab1_sub = _tab2_scope_from_tab1()
+    by_scope = _tab2_overrides_by_scope_state()
+    scope_overrides = by_scope.get(scope_key, {})
+    if not isinstance(scope_overrides, dict):
+        scope_overrides = {}
+
     base = get_param_source()
-    final = apply_admin_overrides(base)
+    source_caption = "Источник: общие параметры"
+    use_tab1_sub = scope_key.startswith("sub:") and bool(tab1_sub)
+    if use_tab1_sub:
+        try:
+            tables = _load_farm_tables_from_db(tab1_sub)
+            base = inject_live_semen_params(get_or_compute_subdivision_params(tab1_sub, tables), tables=tables)
+            source_caption = f"Источник: параметры выбранного подразделения «{tab1_sub}» (из вкладки Tab1)"
+        except Exception as e:
+            source_caption = (
+                f"Источник: общие параметры (не удалось загрузить параметры подразделения «{tab1_sub}»: {e})"
+            )
+    st.caption(source_caption)
+    st.caption(
+        "Для блока «Выбытие»: среднегодовой процент задаёт общий объём выбытия, "
+        "вес лактации распределяет его по лактациям, DIM определяет, когда выбытие происходит."
+    )
+    st.caption(
+        "Для семени: обычное семя считается как 1 - доля сексированного, "
+        "а доля бычков считается как 1 - доля тёлочек."
+    )
+
+    final = apply_admin_overrides(base, runtime_overrides=scope_overrides)
 
     specs = _build_specs(final)
 
@@ -292,21 +400,26 @@ def render_tab2_params() -> None:
     st.divider()
 
                                
-    has_overrides = isinstance(st.session_state.get("runtime_overrides"), dict) and bool(st.session_state.get("runtime_overrides"))
+    has_overrides = isinstance(scope_overrides, dict) and bool(scope_overrides)
     if has_overrides:
-        st.warning("Активны админ-правки: прогноз считается с учётом изменённых параметров.")
+        if scope_key.startswith("sub:"):
+            st.warning(f"Активны админ-правки для подразделения «{tab1_sub}».")
+        else:
+            st.warning("Активны общие админ-правки: прогноз считается с учётом изменённых параметров.")
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         edit_mode = st.toggle("Редактировать", value=False, key="tab2_edit_mode")
     with c2:
         if st.button("Сбросить правки", use_container_width=True, key="tab2_reset_overrides"):
-            st.session_state.pop("runtime_overrides", None)
+            _tab2_set_scope_overrides(scope_key, {})
+            _clear_tab1_result_state()
             st.success("Админ-правки сброшены.")
             st.rerun()
     with c3:
         if st.button("Вернуться к дефолтным параметрам", use_container_width=True, key="tab2_restore_defaults"):
-            st.session_state["runtime_overrides"] = get_model_default_params()
+            _tab2_set_scope_overrides(scope_key, get_model_default_params())
+            _clear_tab1_result_state()
             st.success("Применены дефолтные параметры модели.")
             st.rerun()
     if not edit_mode:
@@ -325,7 +438,7 @@ def render_tab2_params() -> None:
             hide_index=True,
             disabled=["Параметр"],
             column_config={"Значение": st.column_config.TextColumn("Значение")},
-            key=f"tab2_editor_{idx}",
+            key=f"tab2_editor_{scope_key}_{idx}",
         )
         edited_blocks.append(edited_grp)
 
@@ -362,6 +475,8 @@ def render_tab2_params() -> None:
                     _set_by_tokens(overrides, spec.tokens, parsed)
                     changed += 1
 
-        st.session_state["runtime_overrides"] = overrides if overrides else {}
+        overrides = _ensure_semen_complements(overrides)
+        _tab2_set_scope_overrides(scope_key, overrides if overrides else {})
+        _clear_tab1_result_state()
         st.success(f"Готово. Изменено параметров: {changed}.")
         st.rerun()

@@ -30,14 +30,26 @@ forecast_dynamic.py
   определённого по последнему P-осеменению перед отёлом.
 """
 
-from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Dict, Iterable, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
 
 from db import engine
+from forecast_dynamic_normalization import (
+    SemenSexRatio,
+    classify_semen_from_bull_type,
+    classify_semen_from_bull_type_strict,
+    is_transfer_disposal_reason,
+    norm_event_type,
+    norm_gender,
+    norm_id,
+    norm_result,
+    norm_sex,
+    to_semen_ratio as _to_semen_ratio,
+)
 from model_params import (
     GESTATION_DAYS,
     DRY_DAYS,
@@ -50,48 +62,12 @@ from model_params import (
     HERD_CAPACITY,
 )
 
-                                                              
-                                                              
-
-@dataclass(frozen=True)
-class SemenSexRatio:
-    bull_share: float
-    heifer_share: float
-
-
-def _to_semen_ratio(x: Any) -> SemenSexRatio:
-    """Приводим SEMEN_SEX_RATIOS из model_params к нашему dataclass."""
-    if isinstance(x, SemenSexRatio):
-        return x
-    if hasattr(x, "bull_share") and hasattr(x, "heifer_share"):
-        return SemenSexRatio(float(x.bull_share), float(x.heifer_share))
-    if isinstance(x, dict):
-        b = float(x.get("bull_share", 0.5))
-        h = float(x.get("heifer_share", 1.0 - b))
-        return SemenSexRatio(b, h)
-    return SemenSexRatio(0.5, 0.5)
-
-
-                                                              
-                                                              
-
 import re
 from copy import deepcopy
 import logging
 
 logger = logging.getLogger(__name__)
 
-
-def norm_id(x: object) -> str:
-    if x is None:
-        return ""
-    s = str(x).replace("\u00a0", " ").strip()
-    if s == "" or s.lower() in {"nan", "<na>", "none", "null"}:
-        return ""
-    m = re.fullmatch(r"(\d+)\.0+", s)
-    if m:
-        return m.group(1)
-    return s
 
 def _extract_calf_births(calv: pd.DataFrame, as_of_ts: pd.Timestamp) -> pd.DataFrame:
     """
@@ -130,126 +106,18 @@ def _extract_calf_births(calv: pd.DataFrame, as_of_ts: pd.Timestamp) -> pd.DataF
             .first()[["reg_s", "birth_dt", "sex_norm"]]
     )
     return born
-import pandas as pd
-
-def norm_gender(x):
-    if x is None:
-        return None
-    s = str(x).strip().upper()
-    if s in ("F", "Ж", "FEMALE", "0"):
-        return "F"
-    if s in ("M", "М", "MALE", "1"):
-        return "M"
-    return None
-
-def norm_sex(x: object) -> str | None:
-    """
-    Нормализуем пол телёнка.
-
-    В сырых данных часто встречаются:
-      - F / Ж / Т / ТЁЛКА / HEIFER / FEMALE
-      - M / М / Б / БЫЧОК / BULL / MALE
-      - иногда целые слова, иногда одна буква, иногда с пробелами/точками
-    """
-    if x is None:
-        return None
-
-    v = str(x).replace("\u00a0", " ").strip().upper().replace("Ё", "Е")
-    if v == "" or v in {"NAN", "NONE", "NULL", "0", "0.0"}:
-        return None
-
-             
-    if v in {"F", "Ж", "ЖЕН", "ЖЕНСКИЙ"}:
-        return "F"
-    if "ТЕЛ" in v or "ТЁЛ" in v or "HEIF" in v or "FEMALE" in v:
-        return "F"
-
-             
-    if v in {"M", "М", "МУЖ", "МУЖСКОЙ"}:
-        return "M"
-    if "БЫЧ" in v or "BULL" in v or "MALE" in v:
-        return "M"
-
-    return None
-
-
-
-def norm_event_type(x: object) -> str:
-    """
-    Приводим event_type в 2 основных вида:
-      - "РОЖДЕН" (строка телёнка)
-      - "ОТЕЛ"   (строка отёла/отёл коровы, если такие есть)
-    """
-    if x is None:
-        return ""
-    v = str(x).replace("\xa0", " ").strip().upper().replace("Ё", "Е")
-    if v == "" or v == "NAN":
-        return ""
-    if ("РОЖ" in v) or ("BORN" in v) or ("BIRTH" in v):
-        return "РОЖДЕН"
-    if ("ОТЕЛ" in v) or ("CALV" in v):
-        return "ОТЕЛ"
-    return v
-
-
-def norm_result(x: object) -> str:
-    if x is None:
-        return ""
-    v = str(x).replace("\xa0", " ").strip().upper().replace("Ё", "Е")
-    if v in {"", "NAN", "NONE", "NULL", "0", "0.0"}:
-        return ""
-    if v in {"P", "П"}:
-        return "P"
-    if "PREG" in v:
-        return "P"
-    if "СТЕЛ" in v or v in {"СТ", "СТ.", "СТ+", "СТЕЛЬНАЯ", "СТЕЛЬН"}:
-        return "P"
-    return v
-
-
-def is_transfer_disposal_reason(x: object) -> bool:
-    if x is None:
-        return False
-    v = str(x).replace("\u00a0", " ").strip().upper().replace("Ё", "Е")
-    if v in {"", "NAN", "NONE", "NULL"}:
-        return False
-    if "ПЕРЕЕЗД" in v:
-        return True
-    if "MOVE" in v or "TRANSFER" in v:
-        return True
-    return False
-
-
-def classify_semen_from_bull_type(bull_type: object) -> str:
-    """Возвращаем 'sex' или 'trad'."""
-    v = "" if bull_type is None else str(bull_type).strip().upper()
-    if v == "S" or "SEX" in v:
-        return "sex"
-    return "trad"
-
-
-def classify_semen_from_bull_type_strict(bull_type: object) -> str | None:
-    """
-    Возвращает 'sex' / 'trad' только если тип определён однозначно.
-    Пустые/None значения трактуем как неизвестный тип.
-    """
-    v = "" if bull_type is None else str(bull_type).strip().upper()
-    if v in {"", "NAN", "NONE", "NULL"}:
-        return None
-    if v == "S" or "SEX" in v:
-        return "sex"
-    if v in {"T", "TRAD", "TRADITIONAL", "CONV", "CONVENTIONAL"}:
-        return "trad"
-    return None
-
-
-                                                              
-                                                              
-
 MAX_DIM = 500
 MAX_AGE_DAYS = 730
 BULL_AGE_MAX = 90                                             
 OVERDUE_CLAMP_DAYS = 14
+
+BIRTH_OUTPUT_KEYS = (
+    "Ожидаемый отёл, всего",
+    "Ожидаемый отёл, из них коров",
+    "Ожидаемый отёл, из них нетелей",
+    "Ожидаемые бычки",
+    "Ожидаемые тёлочки",
+)
 
 
 def age_months(d: int) -> int:
@@ -261,6 +129,15 @@ def end_of_month(d: date) -> date:
         return date(d.year, 12, 31)
     first_next = date(d.year, d.month + 1, 1)
     return first_next - timedelta(days=1)
+
+
+def _month_end_shift(d_end: date, months_delta: int) -> date:
+    ts = pd.Timestamp(d_end) + pd.DateOffset(months=months_delta)
+    return end_of_month(date(int(ts.year), int(ts.month), 1))
+
+
+def _months_between_eom(start_eom: date, end_eom: date) -> int:
+    return (int(end_eom.year) - int(start_eom.year)) * 12 + (int(end_eom.month) - int(start_eom.month))
 
 
 def shift_right(a: np.ndarray) -> np.ndarray:
@@ -299,6 +176,63 @@ def _effective_ai_interval_days(interval_raw: float, mean_target: float, first: 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, x)))
+
+
+def _normalize_month_factor_map(raw: Any) -> dict[int, float]:
+    # Сезонные коэффициенты пока намеренно отключены.
+    return {m: 1.0 for m in range(1, 13)}
+
+
+def _normalize_semen_usage_shares(raw: Any) -> dict[str, float] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    cow_sex = raw.get("cow_sex")
+    cow_trad = raw.get("cow_trad")
+    heifer_sex = raw.get("heifer_sex")
+    heifer_trad = raw.get("heifer_trad")
+
+    if cow_sex is None and cow_trad is None and heifer_sex is None and heifer_trad is None:
+        return None
+
+    def _pair(a_raw: Any, b_raw: Any, a_fb: float, b_fb: float) -> tuple[float, float]:
+        a = None if a_raw is None else _clamp(float(a_raw), 0.0, 1.0)
+        b = None if b_raw is None else _clamp(float(b_raw), 0.0, 1.0)
+        if a is None and b is None:
+            a, b = float(a_fb), float(b_fb)
+        elif a is None:
+            a = 1.0 - float(b)
+        elif b is None:
+            b = 1.0 - float(a)
+        s = max(1e-9, float(a) + float(b))
+        return float(a) / s, float(b) / s
+
+    cow_trad_n, cow_sex_n = _pair(
+        cow_trad,
+        cow_sex,
+        float(SEMEN_USAGE_PROBS.cow_trad),
+        float(SEMEN_USAGE_PROBS.cow_sex),
+    )
+    heifer_trad_n, heifer_sex_n = _pair(
+        heifer_trad,
+        heifer_sex,
+        float(SEMEN_USAGE_PROBS.heifer_trad),
+        float(SEMEN_USAGE_PROBS.heifer_sex),
+    )
+    return {
+        "cow_trad": cow_trad_n,
+        "cow_sex": cow_sex_n,
+        "heifer_trad": heifer_trad_n,
+        "heifer_sex": heifer_sex_n,
+    }
+
+
+def _month_factor_value(month_factors: dict[int, float], dt_like: Any) -> float:
+    try:
+        month = int(pd.Timestamp(dt_like).month)
+    except Exception:
+        return 1.0
+    return float(month_factors.get(month, 1.0))
 
 
                                                               
@@ -433,12 +367,22 @@ def _resolve_runtime_params(overrides: dict | None) -> dict:
         "cow_services_per_conception": float(INSEMINATION_PARAMS.cow_services_per_conception),
         "cow_ai_interval_days": float(INSEMINATION_PARAMS.cow_ai_interval_days),
         "cow_first_ai_dim_by_lact": dict(INSEMINATION_PARAMS.cow_first_ai_dim_by_lact),
+        "cow_conception_month_factors": dict(INSEMINATION_PARAMS.cow_conception_month_factors),
         "heifer_services_per_conception": float(INSEMINATION_PARAMS.heifer_services_per_conception),
         "heifer_ai_interval_days": float(INSEMINATION_PARAMS.heifer_ai_interval_days),
         "heifer_first_ai_age_days": float(INSEMINATION_PARAMS.heifer_first_ai_age_days),
+        "heifer_conception_month_factors": dict(INSEMINATION_PARAMS.heifer_conception_month_factors),
     }
+    ins["cow_conception_month_factors"] = _normalize_month_factor_map(
+        ins.get("cow_conception_month_factors", INSEMINATION_PARAMS.cow_conception_month_factors)
+    )
+    ins["heifer_conception_month_factors"] = _normalize_month_factor_map(
+        ins.get("heifer_conception_month_factors", INSEMINATION_PARAMS.heifer_conception_month_factors)
+    )
 
-    semen_usage = ov.get("SEMEN_USAGE_SHARES")
+    semen_usage = _normalize_semen_usage_shares(ov.get("SEMEN_USAGE_SHARES"))
+    if semen_usage is None:
+        semen_usage = _normalize_semen_usage_shares(ov.get("semen_usage"))
 
     cap_norm = dict(_CAP_NORM)
     cap_ov = ov.get("HERD_CAPACITY")
@@ -1580,11 +1524,17 @@ def build_initial_state(
     ins_params = insemination_params or {}
     cow_spc = float(ins_params.get("cow_services_per_conception", float(INSEMINATION_PARAMS.cow_services_per_conception)))
     heif_spc = float(ins_params.get("heifer_services_per_conception", float(INSEMINATION_PARAMS.heifer_services_per_conception)))
+    cow_month_factors = _normalize_month_factor_map(
+        ins_params.get("cow_conception_month_factors", INSEMINATION_PARAMS.cow_conception_month_factors)
+    )
+    heifer_month_factors = _normalize_month_factor_map(
+        ins_params.get("heifer_conception_month_factors", INSEMINATION_PARAMS.heifer_conception_month_factors)
+    )
 
-    p_conc_cow = _clamp(1.0 / max(1e-9, cow_spc), 0.05, 0.95)
+    p_conc_cow_base = 1.0 / max(1e-9, cow_spc)
 
     p_conc_heif_raw = 1.0 / max(1e-9, heif_spc)
-    p_conc_heif = _clamp(float(ins_params.get("heifer_warmstart_p", p_conc_heif_raw)), 0.03, 0.35)
+    p_conc_heif_base = float(ins_params.get("heifer_warmstart_p", p_conc_heif_raw))
 
     SERVICE_RESULTS = {"", "O", "О"}
 
@@ -1671,7 +1621,8 @@ def build_initial_state(
                         days_to_calv2 = 0
 
                     if 0 <= days_to_calv2 <= gest_days:
-                        add = float(p_conc_cow)
+                        month_factor = _month_factor_value(cow_month_factors, s_date)
+                        add = _clamp(p_conc_cow_base * month_factor, 0.05, 0.95)
                         open_add = 1.0 - add
                         is_dry2 = is_dry_fact or (days_to_calv2 <= dry_days)
                         if is_dry2:
@@ -1732,7 +1683,8 @@ def build_initial_state(
             if not (0 <= days_to_calv <= gest_days):
                 continue
 
-            add = float(p_conc_heif)
+            month_factor = _month_factor_value(heifer_month_factors, s_date)
+            add = _clamp(p_conc_heif_base * month_factor, 0.03, 0.35)
             state.heifer_preg[semen][days_to_calv] += add
 
                                                                   
@@ -2006,6 +1958,12 @@ def simulate_to_target(
     cow_sex_share = float(semen_shares["cow_sex"])
     heif_trad_share = float(semen_shares["heifer_trad"])
     heif_sex_share = float(semen_shares["heifer_sex"])
+    cow_month_factors = _normalize_month_factor_map(
+        ins_p.get("cow_conception_month_factors", INSEMINATION_PARAMS.cow_conception_month_factors)
+    )
+    heifer_month_factors = _normalize_month_factor_map(
+        ins_p.get("heifer_conception_month_factors", INSEMINATION_PARAMS.heifer_conception_month_factors)
+    )
 
     snapshot: HerdState | None = None
     if target_ts <= start_ts:
@@ -2044,10 +2002,11 @@ def simulate_to_target(
             spc = float(ins_p["cow_services_per_conception"])
             interval_raw = float(ins_p["cow_ai_interval_days"])
             mean_target = float(cp["avg_cow_dim_by_lact"].get(l, cp["avg_cow_dim_global"]))
+            month_factor = _month_factor_value(cow_month_factors, day)
 
             interval = _effective_ai_interval_days(interval_raw, mean_target, first_ai, spc)
             p_service = 1.0 / max(1.0, interval)
-            p_conc = _clamp(1.0 / max(1e-9, spc), 0.05, 0.95)
+            p_conc = _clamp((1.0 / max(1e-9, spc)) * month_factor, 0.05, 0.95)
 
             open_arr = state.open_dim[l]
             first_i = int(_clamp(first_ai, 0.0, float(MAX_DIM)))
@@ -2081,10 +2040,11 @@ def simulate_to_target(
         spc_h = float(ins_p["heifer_services_per_conception"])
         interval_raw_h = float(ins_p["heifer_ai_interval_days"])
         mean_target_h = float(cp["avg_heifer_age_days"])
+        month_factor_h = _month_factor_value(heifer_month_factors, day)
 
         interval_h = _effective_ai_interval_days(interval_raw_h, mean_target_h, first_ai_age, spc_h)
         p_service_h = 1.0 / max(1.0, interval_h)
-        p_conc_h = _clamp(1.0 / max(1e-9, spc_h), 0.05, 0.95)
+        p_conc_h = _clamp((1.0 / max(1e-9, spc_h)) * month_factor_h, 0.05, 0.95)
 
         first_h = int(_clamp(first_ai_age, 0.0, float(MAX_AGE_DAYS)))
         if first_h < len(state.heifer_age):
@@ -2327,8 +2287,8 @@ def compute_forecast_dynamic_from_db(
         "Ожидаемый отёл, из них коров": round(calv_cows_f, 1),
         "Ожидаемый отёл, из них нетелей": round(calv_heifers_f, 1),
 
-        "Ожидаемые бычки (условно)": round(exp_bulls_f, 1),
-        "Ожидаемые тёлочки (условно)": round(exp_heifers_f, 1),
+        "Ожидаемые бычки": round(exp_bulls_f, 1),
+        "Ожидаемые тёлочки": round(exp_heifers_f, 1),
 
         "К реализации: коровы": round(float(meta.get("sell_cows", 0.0)), 1),
         "К реализации: тёлки": round(float(meta.get("sell_heifers", 0.0)), 1),
@@ -2351,6 +2311,26 @@ def compute_forecast_dynamic_from_db(
         semen_shares=semen_shares,
         semen_sex_ratios=semen_sex_ratios,
         as_of_date=as_of_date,
+    )
+    _apply_current_month_observed_births_overlay(
+        out,
+        tables,
+        target_date,
+        start_ts=start,
+        as_of_date=as_of_date,
+    )
+    _scale_birth_output(
+        out,
+        _recent_birth_bias_factor_from_tables(
+            tables,
+            target_date,
+            as_of_date=as_of_date,
+            overrides=ov,
+            gest_days=gest_days,
+            insemination_params=params["INSEMINATION_PARAMS"],
+            semen_shares=semen_shares,
+            semen_sex_ratios=semen_sex_ratios,
+        ),
     )
     return out
 
@@ -2388,6 +2368,258 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+def _smape_percent(pred_val: float, fact_val: float) -> float | None:
+    scale = abs(float(pred_val)) + abs(float(fact_val))
+    if scale < 20.0:
+        return None
+    return 200.0 * abs(float(pred_val) - float(fact_val)) / scale
+
+
+def _scale_birth_output(out: Dict[str, float], factor: float) -> None:
+    factor = float(factor)
+    if abs(factor - 1.0) <= 1e-9:
+        return
+    for key in BIRTH_OUTPUT_KEYS:
+        if key in out:
+            out[key] = round(_safe_float(out.get(key), 0.0) * factor, 1)
+
+
+def _expected_calving_proxy_breakdown_from_tables(
+    tables: Dict[str, pd.DataFrame],
+    target_date: pd.Timestamp,
+    *,
+    gest_days: int,
+    insemination_params: Dict[str, Any],
+    semen_shares: Dict[str, float],
+    semen_sex_ratios: Dict[str, SemenSexRatio],
+    as_of_date: date | None = None,
+) -> Dict[str, float]:
+    out = {key: 0.0 for key in BIRTH_OUTPUT_KEYS}
+    ins = tables.get("ins")
+    if not isinstance(ins, pd.DataFrame) or ins.empty:
+        return out
+
+    d = ins.copy()
+    d["event_date_n"] = pd.to_datetime(d.get("event_date"), errors="coerce").dt.normalize()
+    d["lact_n"] = pd.to_numeric(d.get("lact"), errors="coerce")
+
+    if as_of_date is not None:
+        as_of_ts = pd.Timestamp(as_of_date).normalize()
+        d = d[d["event_date_n"].notna() & (d["event_date_n"] <= as_of_ts)]
+    else:
+        d = d[d["event_date_n"].notna()]
+
+    if d.empty:
+        return out
+
+    m_start = pd.Timestamp(target_date).normalize().to_period("M").to_timestamp().normalize()
+    m_next = (m_start + pd.offsets.MonthBegin(1)).normalize()
+
+    d["due_dt"] = d["event_date_n"] + pd.to_timedelta(int(gest_days), unit="D")
+    due = d[(d["due_dt"] >= m_start) & (d["due_dt"] < m_next)].copy()
+    if due.empty:
+        return out
+
+    cow_spc = _safe_float(
+        insemination_params.get("cow_services_per_conception"),
+        float(INSEMINATION_PARAMS.cow_services_per_conception),
+    )
+    heif_spc = _safe_float(
+        insemination_params.get("heifer_services_per_conception"),
+        float(INSEMINATION_PARAMS.heifer_services_per_conception),
+    )
+
+    cow_month_factors = _normalize_month_factor_map(
+        insemination_params.get("cow_conception_month_factors", INSEMINATION_PARAMS.cow_conception_month_factors)
+    )
+    heifer_month_factors = _normalize_month_factor_map(
+        insemination_params.get("heifer_conception_month_factors", INSEMINATION_PARAMS.heifer_conception_month_factors)
+    )
+
+    due["base_p"] = np.where(
+        due["lact_n"] > 0,
+        1.0 / max(1e-9, cow_spc),
+        1.0 / max(1e-9, heif_spc),
+    )
+    due["month_factor"] = np.where(
+        due["lact_n"] > 0,
+        due["event_date_n"].dt.month.map(lambda m: float(cow_month_factors.get(int(m), 1.0))),
+        due["event_date_n"].dt.month.map(lambda m: float(heifer_month_factors.get(int(m), 1.0))),
+    )
+    due["month_factor"] = pd.to_numeric(due["month_factor"], errors="coerce").fillna(1.0)
+    due["exp_weight"] = np.clip(due["base_p"] * due["month_factor"], 0.05, 0.95)
+
+    exp_cow = float(due.loc[due["lact_n"] > 0, "exp_weight"].sum())
+    exp_heif = float(due.loc[due["lact_n"] <= 0, "exp_weight"].sum())
+    exp_unk = float(due.loc[due["lact_n"].isna(), "exp_weight"].sum())
+    exp_total = exp_cow + exp_heif + exp_unk
+
+    trad_bull = float(semen_sex_ratios["trad"].bull_share)
+    sex_bull = float(semen_sex_ratios["sex"].bull_share)
+    bull_share_cow = float(semen_shares.get("cow_trad", 0.0)) * trad_bull + float(semen_shares.get("cow_sex", 0.0)) * sex_bull
+    bull_share_heif = float(semen_shares.get("heifer_trad", 0.0)) * trad_bull + float(semen_shares.get("heifer_sex", 0.0)) * sex_bull
+    exp_bulls = (exp_cow + exp_unk) * bull_share_cow + exp_heif * bull_share_heif
+    exp_heifers = exp_total - exp_bulls
+
+    out["Ожидаемый отёл, всего"] = float(exp_total)
+    out["Ожидаемый отёл, из них коров"] = float(exp_cow + exp_unk)
+    out["Ожидаемый отёл, из них нетелей"] = float(exp_heif)
+    out["Ожидаемые бычки"] = float(exp_bulls)
+    out["Ожидаемые тёлочки"] = float(exp_heifers)
+    return out
+
+
+def _apply_current_month_observed_births_overlay(
+    out: Dict[str, float],
+    tables: Dict[str, pd.DataFrame],
+    target_date: pd.Timestamp,
+    *,
+    start_ts: pd.Timestamp,
+    as_of_date: date | None = None,
+) -> None:
+    if as_of_date is not None:
+        return
+    if start_ts is None or pd.isna(start_ts):
+        return
+
+    target_ts = pd.Timestamp(target_date).normalize()
+    start_ts = pd.Timestamp(start_ts).normalize()
+    if target_ts.to_period("M") != start_ts.to_period("M"):
+        return
+
+    observed_cutoff = (start_ts - pd.Timedelta(days=1)).normalize()
+    month_start = target_ts.to_period("M").to_timestamp().normalize()
+    if observed_cutoff < month_start:
+        return
+
+    from core.calving_facts import actual_birth_stats_from_tables
+
+    observed = actual_birth_stats_from_tables(
+        tables.get("calv", pd.DataFrame()),
+        tables.get("ins", pd.DataFrame()),
+        target_ts.date(),
+        as_of_date=observed_cutoff.date(),
+    )
+    if _safe_float(observed.get("Ожидаемый отёл, всего"), 0.0) <= 0:
+        return
+
+    for key in BIRTH_OUTPUT_KEYS:
+        out[key] = round(_safe_float(out.get(key), 0.0) + _safe_float(observed.get(key), 0.0), 1)
+
+
+def _recent_birth_bias_factor_from_tables(
+    tables: Dict[str, pd.DataFrame],
+    target_date: pd.Timestamp,
+    *,
+    as_of_date: date | None,
+    overrides: dict | None,
+    gest_days: int,
+    insemination_params: Dict[str, Any],
+    semen_shares: Dict[str, float],
+    semen_sex_ratios: Dict[str, SemenSexRatio],
+) -> float:
+    if as_of_date is None:
+        return 1.0
+
+    ov = dict(overrides or {})
+    if bool(ov.get("_DISABLE_DYNAMIC_BIRTH_ADJUST", False)):
+        return 1.0
+    if not bool(ov.get("auto_birth_bias_correction", True)):
+        return 1.0
+
+    from core.calving_facts import actual_birth_stats_from_tables, is_calving_month_complete_from_tables
+
+    target_eom = pd.Timestamp(target_date).to_period("M").to_timestamp("M").date()
+    asof_eom = pd.Timestamp(as_of_date).to_period("M").to_timestamp("M").date()
+    horizon_m = max(0, _months_between_eom(asof_eom, target_eom))
+
+    window = int(ov.get("birth_bias_window_months", 4) or 4)
+    window = max(2, min(6, window))
+    min_hist = int(ov.get("birth_bias_min_hist_months", 2) or 2)
+    min_hist = max(2, min(window, min_hist))
+    factor_min = _clamp(_safe_float(ov.get("birth_bias_factor_min"), 0.9), 0.7, 1.1)
+    factor_max = _clamp(_safe_float(ov.get("birth_bias_factor_max"), 1.3), 1.0, 1.6)
+    smape_threshold = _clamp(_safe_float(ov.get("birth_bias_smape_threshold"), 10.0), 5.0, 40.0)
+
+    hist: list[tuple[float, float, float]] = []
+    nested_ov = dict(ov)
+    nested_ov["_DISABLE_DYNAMIC_BIRTH_ADJUST"] = True
+
+    for i in range(1, window + 1):
+        past_target = _month_end_shift(target_eom, -i)
+        past_asof = _month_end_shift(past_target, -horizon_m)
+        if past_asof > past_target:
+            continue
+        if not is_calving_month_complete_from_tables(tables.get("calv", pd.DataFrame()), past_target):
+            continue
+
+        past_pred_vals = compute_forecast_dynamic_from_tables(
+            tables,
+            past_target,
+            overrides=nested_ov,
+            as_of_date=past_asof,
+        ) or {}
+        pred_total = _safe_float(past_pred_vals.get("Ожидаемый отёл, всего"), 0.0)
+        if pred_total <= 1e-9:
+            continue
+
+        fact_total = _safe_float(
+            actual_birth_stats_from_tables(
+                tables.get("calv", pd.DataFrame()),
+                tables.get("ins", pd.DataFrame()),
+                past_target,
+                as_of_date=None,
+            ).get("Ожидаемый отёл, всего"),
+            0.0,
+        )
+        proxy_total = _safe_float(
+            _expected_calving_proxy_breakdown_from_tables(
+                tables,
+                pd.Timestamp(past_target),
+                gest_days=gest_days,
+                insemination_params=insemination_params,
+                semen_shares=semen_shares,
+                semen_sex_ratios=semen_sex_ratios,
+                as_of_date=past_asof,
+            ).get("Ожидаемый отёл, всего"),
+            0.0,
+        )
+        if proxy_total <= 1e-9:
+            continue
+        if (abs(pred_total) + abs(fact_total)) < 20.0:
+            continue
+        hist.append((pred_total, proxy_total, fact_total))
+
+    if len(hist) < min_hist:
+        return 1.0
+
+    model_err = pd.Series([fact - pred for pred, _proxy, fact in hist], dtype=float)
+    proxy_err = pd.Series([fact - proxy for _pred, proxy, fact in hist], dtype=float)
+
+    same_model = max(float((model_err > 0).mean()), float((model_err < 0).mean()))
+    same_proxy = max(float((proxy_err > 0).mean()), float((proxy_err < 0).mean()))
+    model_smape_values = [_smape_percent(pred, fact) for pred, _proxy, fact in hist]
+    proxy_smape_values = [_smape_percent(proxy, fact) for _pred, proxy, fact in hist]
+    model_smape = float(pd.Series([x for x in model_smape_values if x is not None], dtype=float).mean() or 0.0)
+    proxy_smape = float(pd.Series([x for x in proxy_smape_values if x is not None], dtype=float).mean() or 0.0)
+
+    if not (
+        same_model >= 0.75
+        and same_proxy >= 0.75
+        and float(model_err.mean()) > 0.0
+        and float(proxy_err.mean()) > 0.0
+        and model_smape >= smape_threshold
+        and proxy_smape >= smape_threshold
+    ):
+        return 1.0
+
+    sum_pred = float(sum(pred for pred, _proxy, _fact in hist))
+    sum_fact = float(sum(fact for _pred, _proxy, fact in hist))
+    if sum_pred <= 1e-9:
+        return 1.0
+    return _clamp(sum_fact / sum_pred, float(factor_min), float(factor_max))
 
 
 def _apply_expected_calving_prob_fallback_from_tables(
@@ -2451,12 +2683,33 @@ def _apply_expected_calving_prob_fallback_from_tables(
         float(INSEMINATION_PARAMS.heifer_services_per_conception),
     )
 
-    p_cow = 1.0 / max(1e-9, cow_spc)
-    p_heif = 1.0 / max(1e-9, heif_spc)
+    cow_month_factors = _normalize_month_factor_map(
+        insemination_params.get("cow_conception_month_factors", INSEMINATION_PARAMS.cow_conception_month_factors)
+    )
+    heifer_month_factors = _normalize_month_factor_map(
+        insemination_params.get("heifer_conception_month_factors", INSEMINATION_PARAMS.heifer_conception_month_factors)
+    )
 
-    exp_cow = n_cow * p_cow
-    exp_heif = n_heif * p_heif
-    exp_unk = n_unk * p_cow                                           
+    due["base_p"] = np.where(
+        due["lact_n"] > 0,
+        1.0 / max(1e-9, cow_spc),
+        1.0 / max(1e-9, heif_spc),
+    )
+    due["month_factor"] = np.where(
+        due["lact_n"] > 0,
+        due["event_date_n"].dt.month.map(lambda m: float(cow_month_factors.get(int(m), 1.0))),
+        due["event_date_n"].dt.month.map(lambda m: float(heifer_month_factors.get(int(m), 1.0))),
+    )
+    due["month_factor"] = pd.to_numeric(due["month_factor"], errors="coerce").fillna(1.0)
+    due["exp_weight"] = np.where(
+        due["lact_n"] > 0,
+        np.clip(due["base_p"] * due["month_factor"], 0.05, 0.95),
+        np.clip(due["base_p"] * due["month_factor"], 0.05, 0.95),
+    )
+
+    exp_cow = float(due.loc[due["lact_n"] > 0, "exp_weight"].sum())
+    exp_heif = float(due.loc[due["lact_n"] <= 0, "exp_weight"].sum())
+    exp_unk = float(due.loc[due["lact_n"].isna(), "exp_weight"].sum())
     exp_total = exp_cow + exp_heif + exp_unk
 
     out["Ожидаемый отёл, всего"] = round(float(exp_total), 1)
@@ -2472,8 +2725,8 @@ def _apply_expected_calving_prob_fallback_from_tables(
     exp_bulls = (exp_cow + exp_unk) * bull_share_cow + exp_heif * bull_share_heif
     exp_heifers = exp_total - exp_bulls
 
-    out["Ожидаемые бычки (условно)"] = round(float(exp_bulls), 1)
-    out["Ожидаемые тёлочки (условно)"] = round(float(exp_heifers), 1)
+    out["Ожидаемые бычки"] = round(float(exp_bulls), 1)
+    out["Ожидаемые тёлочки"] = round(float(exp_heifers), 1)
 
 
 def compute_forecast_dynamic_from_tables(
@@ -2637,8 +2890,8 @@ def compute_forecast_dynamic_from_tables(
         "Ожидаемый отёл, всего": round(calv_total_f, 1),
         "Ожидаемый отёл, из них коров": round(calv_cows_f, 1),
         "Ожидаемый отёл, из них нетелей": round(calv_heifers_f, 1),
-        "Ожидаемые бычки (условно)": round(exp_bulls_f, 1),
-        "Ожидаемые тёлочки (условно)": round(exp_heifers_f, 1),
+        "Ожидаемые бычки": round(exp_bulls_f, 1),
+        "Ожидаемые тёлочки": round(exp_heifers_f, 1),
         "К реализации: коровы": round(float(meta.get("sell_cows", 0.0)), 1),
         "К реализации: тёлки": round(float(meta.get("sell_heifers", 0.0)), 1),
         "К реализации: нетели": round(float(meta.get("sell_neteli", 0.0)), 1),
@@ -2659,5 +2912,25 @@ def compute_forecast_dynamic_from_tables(
         semen_shares=semen_shares,
         semen_sex_ratios=semen_sex_ratios,
         as_of_date=as_of_date,
+    )
+    _apply_current_month_observed_births_overlay(
+        out,
+        tables,
+        target_date,
+        start_ts=start,
+        as_of_date=as_of_date,
+    )
+    _scale_birth_output(
+        out,
+        _recent_birth_bias_factor_from_tables(
+            tables,
+            target_date,
+            as_of_date=as_of_date,
+            overrides=ov,
+            gest_days=gest_days,
+            insemination_params=params["INSEMINATION_PARAMS"],
+            semen_shares=semen_shares,
+            semen_sex_ratios=semen_sex_ratios,
+        ),
     )
     return out

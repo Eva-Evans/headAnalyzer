@@ -231,7 +231,7 @@ def clean_inseminations(df: pd.DataFrame) -> pd.DataFrame:
 
                   
     if "event_date" in df.columns:
-        df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce")
+        df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce", dayfirst=True)
 
                    
     for col in ["id", "reg", "lact", "dim_age", "tech_id"]:

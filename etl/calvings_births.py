@@ -33,6 +33,7 @@ _COL_ALIASES: Dict[str, Tuple[str, ...]] = {
     ),
           
     "mother_reg": (
+        "DREG",
         "MOTHERREG", "MOTHER", "DAM", "DAMID", "MOTHERID",
         "МАТЬ", "МАТКА", "НОМЕРМАТЕРИ", "МАТЕРЬ", "МАМА",
     ),
@@ -58,6 +59,11 @@ _COL_ALIASES: Dict[str, Tuple[str, ...]] = {
     "lact": (
         "LACT", "LACTATION", "ЛАКТАЦИЯ", "НОМЕРЛАКТАЦИИ",
     ),
+    "calf1_reg": ("CALF1", "CALF_1", "ТЕЛЕНОК1", "ТЕЛЁНОК1", "ТЕЛЕНОК_1", "ТЕЛЁНОК_1"),
+    "calf2_reg": ("CALF2", "CALF_2", "ТЕЛЕНОК2", "ТЕЛЁНОК2", "ТЕЛЕНОК_2", "ТЕЛЁНОК_2"),
+    "calf3_reg": ("CALF3", "CALF_3", "ТЕЛЕНОК3", "ТЕЛЁНОК3", "ТЕЛЕНОК_3", "ТЕЛЁНОК_3"),
+    "calf4_reg": ("CALF4", "CALF_4", "ТЕЛЕНОК4", "ТЕЛЁНОК4", "ТЕЛЕНОК_4", "ТЕЛЁНОК_4"),
+    "calf5_reg": ("CALF5", "CALF_5", "ТЕЛЕНОК5", "ТЕЛЁНОК5", "ТЕЛЕНОК_5", "ТЕЛЁНОК_5"),
                                                        
     "note": ("NOTE", "КОММЕНТАРИЙ", "ПРИМЕЧАНИЕ", "ЗАМЕТКА"),
     "protocol": ("PROTOCOL", "ПРОТОКОЛ"),
@@ -144,7 +150,7 @@ def _norm_event_type_value(x: Any) -> str:
         return ""
     v = str(x).replace("\u00a0", " ").strip().upper().replace("Ё", "Е")
                                    
-    if "РОЖ" in v or "BIRTH" in v:
+    if "РОЖ" in v or "BIRTH" in v or "BORN" in v:
         return "РОЖДЕН"
     if "ОТЕЛ" in v or "CALV" in v:
         return "ОТЕЛ"
@@ -152,7 +158,7 @@ def _norm_event_type_value(x: Any) -> str:
 
 
 def _to_datetime(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce")
+    return pd.to_datetime(s, errors="coerce", dayfirst=True)
 
 
 def _as_excel_source(file: Any):
@@ -263,6 +269,11 @@ def read_calvings_excel(file, include_meta: bool = False) -> pd.DataFrame:
         ("birth_date", pd.NaT),
         ("sex", pd.NA),
         ("lact", pd.NA),
+        ("calf1_reg", pd.NA),
+        ("calf2_reg", pd.NA),
+        ("calf3_reg", pd.NA),
+        ("calf4_reg", pd.NA),
+        ("calf5_reg", pd.NA),
         ("note", pd.NA),
         ("protocol", pd.NA),
         ("technician", pd.NA),
@@ -277,6 +288,8 @@ def read_calvings_excel(file, include_meta: bool = False) -> pd.DataFrame:
                   
     df["reg"] = _norm_id_series(df["reg"])
     df["mother_reg"] = _norm_id_series(df["mother_reg"])
+    for calf_col in ("calf1_reg", "calf2_reg", "calf3_reg", "calf4_reg", "calf5_reg"):
+        df[calf_col] = _norm_id_series(df[calf_col])
 
     df["event_date"] = _to_datetime(df["event_date"])
     df["birth_date"] = _to_datetime(df["birth_date"])
@@ -298,6 +311,11 @@ def read_calvings_excel(file, include_meta: bool = False) -> pd.DataFrame:
         "event_type",
         "event_date",
         "lact",
+        "calf1_reg",
+        "calf2_reg",
+        "calf3_reg",
+        "calf4_reg",
+        "calf5_reg",
         "disposal_date",
         "disposal_reason",
         "disposal_remark",
@@ -310,9 +328,60 @@ def read_calvings_excel(file, include_meta: bool = False) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = pd.NA
     out = df[keep].copy()
-    if include_meta:
-        out["__farm"] = farm_series if farm_series is not None else pd.NA
-        out["__subdivision"] = subdivision_series if subdivision_series is not None else pd.NA
+
+    calf_cols = ["calf1_reg", "calf2_reg", "calf3_reg", "calf4_reg", "calf5_reg"]
+    mother_for_birth = out["mother_reg"].where(out["mother_reg"].notna() & (out["mother_reg"] != ""), out["reg"])
+    birth_event_dt = out["birth_date"].where(out["birth_date"].notna(), out["event_date"])
+
+    born_rows: list[pd.DataFrame] = []
+    for calf_col in calf_cols:
+        calf_reg = out[calf_col]
+        mask = (
+            calf_reg.notna()
+            & (calf_reg != "")
+            & (out["event_type"] != "РОЖДЕН")
+            & birth_event_dt.notna()
+        )
+        if not bool(mask.any()):
+            continue
+        born_part = pd.DataFrame(
+            {
+                "reg": calf_reg.loc[mask],
+                "mother_reg": mother_for_birth.loc[mask],
+                "birth_date": birth_event_dt.loc[mask],
+                "sex": out.loc[mask, "sex"],
+                "event_type": "РОЖДЕН",
+                "event_date": birth_event_dt.loc[mask],
+                "lact": pd.NA,
+                "disposal_date": pd.NaT,
+                "disposal_reason": pd.NA,
+                "disposal_remark": pd.NA,
+                "age": pd.NA,
+                "note": out.loc[mask, "note"],
+                "protocol": out.loc[mask, "protocol"],
+                "technician": out.loc[mask, "technician"],
+            }
+        )
+        if include_meta:
+            born_part["__farm"] = farm_series.loc[mask] if farm_series is not None else pd.NA
+            born_part["__subdivision"] = subdivision_series.loc[mask] if subdivision_series is not None else pd.NA
+        born_rows.append(born_part)
+
+    if born_rows:
+        base_cols = [c for c in out.columns if not c.startswith("calf")]
+        if include_meta:
+            base_out = out[base_cols].copy()
+            base_out["__farm"] = farm_series if farm_series is not None else pd.NA
+            base_out["__subdivision"] = subdivision_series if subdivision_series is not None else pd.NA
+        else:
+            base_out = out[base_cols].copy()
+        out = pd.concat([base_out, *born_rows], ignore_index=True)
+        out = out.drop_duplicates(subset=["reg", "mother_reg", "birth_date", "event_type", "event_date"], keep="first")
+    else:
+        out = out[[c for c in out.columns if not c.startswith("calf")]].copy()
+        if include_meta:
+            out["__farm"] = farm_series if farm_series is not None else pd.NA
+            out["__subdivision"] = subdivision_series if subdivision_series is not None else pd.NA
     return out
 
 
@@ -352,9 +421,9 @@ def clean_calvings(df: pd.DataFrame) -> pd.DataFrame:
     df = df[target_cols]
 
           
-    df["birth_date"] = pd.to_datetime(df["birth_date"], errors="coerce")
-    df["disposal_date"] = pd.to_datetime(df["disposal_date"], errors="coerce")
-    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce")
+    df["birth_date"] = pd.to_datetime(df["birth_date"], errors="coerce", dayfirst=True)
+    df["disposal_date"] = pd.to_datetime(df["disposal_date"], errors="coerce", dayfirst=True)
+    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce", dayfirst=True)
 
     df["lact"] = pd.to_numeric(df["lact"], errors="coerce")
     df["age"] = pd.to_numeric(df["age"], errors="coerce")

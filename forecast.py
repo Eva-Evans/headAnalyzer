@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import date
+from calendar import monthrange
+from datetime import date, datetime
 from typing import Dict, Optional, Tuple
 
-import pandas as pd
-
-from db import engine
-from sqlalchemy import text
 import model_params as mp
-from calendar import monthrange
-from datetime import date
+import pandas as pd
+from db import engine
+from forecast_dynamic import compute_forecast_dynamic_from_db
+from sqlalchemy import text
 
 def _month_bounds(d: date) -> tuple[date, date]:
     ms = date(d.year, d.month, 1)
@@ -26,11 +25,6 @@ def _pop_due(counter, month_start: date, month_end: date) -> float:
     for dt in due_dates:
         del counter[dt]
     return n
-
-                                                          
-from forecast_dynamic import compute_forecast_dynamic_from_db
-import pandas as pd
-from datetime import date, datetime
 
 def _to_ts(x) -> pd.Timestamp:
     """
@@ -74,16 +68,29 @@ def _actual_calvings_total_month(month_end_date: date, as_of_date: date | None =
     sql = """
     WITH src AS (
       SELECT
-        COALESCE(
-          NULLIF(TRIM(COALESCE(mother_reg, '')), ''),
-          NULLIF(TRIM(COALESCE(reg, '')), ''),
-          NULLIF(TRIM(COALESCE(animal_id, '')), '')
-        ) AS dam_key,
-        event_date::date AS event_dt
+        CASE
+          WHEN (
+            UPPER(REPLACE(COALESCE(event_type, ''), 'Ё', 'Е')) LIKE '%ОТЕЛ%'
+            OR UPPER(COALESCE(event_type, '')) LIKE '%CALV%'
+          )
+          THEN COALESCE(
+            NULLIF(TRIM(COALESCE(reg, '')), ''),
+            NULLIF(TRIM(COALESCE(animal_id, '')), '')
+          )
+          ELSE COALESCE(
+            NULLIF(TRIM(COALESCE(mother_reg, '')), ''),
+            NULLIF(TRIM(COALESCE(reg, '')), ''),
+            NULLIF(TRIM(COALESCE(animal_id, '')), '')
+          )
+        END AS dam_key,
+        COALESCE(birth_date::date, event_date::date) AS event_dt
       FROM calvings_births_raw
       WHERE event_date IS NOT NULL
         AND (CAST(:as_of_date AS date) IS NULL OR event_date::date <= CAST(:as_of_date AS date))
         AND (
+          UPPER(REPLACE(COALESCE(event_type, ''), 'Ё', 'Е')) LIKE '%ОТЕЛ%'
+          OR UPPER(COALESCE(event_type, '')) LIKE '%CALV%'
+          OR
           UPPER(REPLACE(COALESCE(event_type, ''), 'Ё', 'Е')) LIKE '%РОЖ%'
           OR UPPER(COALESCE(event_type, '')) LIKE '%BORN%'
           OR UPPER(COALESCE(event_type, '')) LIKE '%BIRTH%'
@@ -127,7 +134,10 @@ def _actual_birth_rows_month(month_end_date: date, as_of_date: date | None = Non
       );
     """
     df = pd.read_sql(text(sql), con=engine, params={"m_start": m_start, "m_next": m_next, "as_of_date": as_of_d})
-    return float(df.loc[0, "n"]) if not df.empty else 0.0
+    birth_rows = float(df.loc[0, "n"]) if not df.empty else 0.0
+    if birth_rows > 0:
+        return birth_rows
+    return _actual_calvings_total_month(month_end_date, as_of_date=as_of_date)
 
 
 def _proxy_expected_calvings_month(
@@ -232,18 +242,87 @@ def _norm_sex_value(x) -> str | None:
     return None
 
 
-def _prior_bull_share_from_params(overrides: dict | None) -> float:
+def _resolve_semen_usage_from_params(overrides: dict | None) -> dict[str, float]:
     ov = overrides or {}
     su = (ov.get("semen_usage") or ov.get("SEMEN_USAGE_SHARES") or {})
+
+    def _pair(a_raw, b_raw, a_fb: float, b_fb: float) -> tuple[float, float]:
+        a = None if a_raw is None else _clamp(_safe_float(a_raw, a_fb), 0.0, 1.0)
+        b = None if b_raw is None else _clamp(_safe_float(b_raw, b_fb), 0.0, 1.0)
+        if a is None and b is None:
+            a, b = float(a_fb), float(b_fb)
+        elif a is None:
+            a = 1.0 - float(b)
+        elif b is None:
+            b = 1.0 - float(a)
+        s = max(1e-9, float(a) + float(b))
+        return float(a) / s, float(b) / s
+
+    cow_trad, cow_sex = _pair(
+        su.get("cow_trad"),
+        su.get("cow_sex"),
+        float(mp.SEMEN_USAGE_PROBS.cow_trad),
+        float(mp.SEMEN_USAGE_PROBS.cow_sex),
+    )
+    heif_trad, heif_sex = _pair(
+        su.get("heifer_trad"),
+        su.get("heifer_sex"),
+        float(mp.SEMEN_USAGE_PROBS.heifer_trad),
+        float(mp.SEMEN_USAGE_PROBS.heifer_sex),
+    )
+    return {
+        "cow_trad": cow_trad,
+        "cow_sex": cow_sex,
+        "heifer_trad": heif_trad,
+        "heifer_sex": heif_sex,
+    }
+
+
+def _resolve_semen_sex_ratios_from_params(overrides: dict | None) -> dict[str, dict[str, float]]:
+    ov = overrides or {}
     ssr = (ov.get("semen_sex_ratios") or ov.get("SEMEN_SEX_RATIOS") or {})
 
-    cow_trad = _safe_float(su.get("cow_trad"), mp.SEMEN_USAGE_PROBS.cow_trad)
-    cow_sex = _safe_float(su.get("cow_sex"), mp.SEMEN_USAGE_PROBS.cow_sex)
-    heif_trad = _safe_float(su.get("heifer_trad"), mp.SEMEN_USAGE_PROBS.heifer_trad)
-    heif_sex = _safe_float(su.get("heifer_sex"), mp.SEMEN_USAGE_PROBS.heifer_sex)
+    def _ratio(d: dict | None, bull_fb: float, heif_fb: float) -> dict[str, float]:
+        dd = d or {}
+        bull_raw = dd.get("bull_share")
+        heif_raw = dd.get("heifer_share")
+        bull = None if bull_raw is None else _clamp(_safe_float(bull_raw, bull_fb), 0.0, 1.0)
+        heif = None if heif_raw is None else _clamp(_safe_float(heif_raw, heif_fb), 0.0, 1.0)
+        if bull is None and heif is None:
+            bull, heif = float(bull_fb), float(heif_fb)
+        elif bull is None:
+            bull = 1.0 - float(heif)
+        elif heif is None:
+            heif = 1.0 - float(bull)
+        s = max(1e-9, float(bull) + float(heif))
+        return {"bull_share": float(bull) / s, "heifer_share": float(heif) / s}
 
-    trad_bull = _safe_float((ssr.get("trad") or {}).get("bull_share"), mp.SEMEN_SEX_RATIOS["trad"].bull_share)
-    sex_bull = _safe_float((ssr.get("sex") or {}).get("bull_share"), mp.SEMEN_SEX_RATIOS["sex"].bull_share)
+    return {
+        "trad": _ratio(
+            ssr.get("trad") if isinstance(ssr, dict) else None,
+            float(mp.SEMEN_SEX_RATIOS["trad"].bull_share),
+            float(mp.SEMEN_SEX_RATIOS["trad"].heifer_share),
+        ),
+        "sex": _ratio(
+            ssr.get("sex") if isinstance(ssr, dict) else None,
+            float(mp.SEMEN_SEX_RATIOS["sex"].bull_share),
+            float(mp.SEMEN_SEX_RATIOS["sex"].heifer_share),
+        ),
+    }
+
+
+def _prior_bull_share_from_params(overrides: dict | None) -> float:
+    ov = overrides or {}
+    su = _resolve_semen_usage_from_params(ov)
+    ssr = _resolve_semen_sex_ratios_from_params(ov)
+
+    cow_trad = float(su["cow_trad"])
+    cow_sex = float(su["cow_sex"])
+    heif_trad = float(su["heifer_trad"])
+    heif_sex = float(su["heifer_sex"])
+
+    trad_bull = float(ssr["trad"]["bull_share"])
+    sex_bull = float(ssr["sex"]["bull_share"])
 
     cow_bull = cow_trad * trad_bull + cow_sex * sex_bull
     heif_bull = heif_trad * trad_bull + heif_sex * sex_bull
@@ -676,24 +755,16 @@ def _apply_expected_calving_prob_fallback(
     out["Ожидаемый отёл, из них коров"] = float(exp_cow + exp_unk)
     out["Ожидаемый отёл, из них нетелей"] = float(exp_heif)
 
-    su = (
-        overrides.get("semen_usage")
-        or overrides.get("SEMEN_USAGE_SHARES")
-        or {}
-    )
-    ssr = (
-        overrides.get("semen_sex_ratios")
-        or overrides.get("SEMEN_SEX_RATIOS")
-        or {}
-    )
+    su = _resolve_semen_usage_from_params(overrides)
+    ssr = _resolve_semen_sex_ratios_from_params(overrides)
 
-    cow_trad = _safe_float(su.get("cow_trad"), mp.SEMEN_USAGE_PROBS.cow_trad)
-    cow_sex = _safe_float(su.get("cow_sex"), mp.SEMEN_USAGE_PROBS.cow_sex)
-    heif_trad = _safe_float(su.get("heifer_trad"), mp.SEMEN_USAGE_PROBS.heifer_trad)
-    heif_sex = _safe_float(su.get("heifer_sex"), mp.SEMEN_USAGE_PROBS.heifer_sex)
+    cow_trad = float(su["cow_trad"])
+    cow_sex = float(su["cow_sex"])
+    heif_trad = float(su["heifer_trad"])
+    heif_sex = float(su["heifer_sex"])
 
-    trad_bull = _safe_float((ssr.get("trad") or {}).get("bull_share"), mp.SEMEN_SEX_RATIOS["trad"].bull_share)
-    sex_bull = _safe_float((ssr.get("sex") or {}).get("bull_share"), mp.SEMEN_SEX_RATIOS["sex"].bull_share)
+    trad_bull = float(ssr["trad"]["bull_share"])
+    sex_bull = float(ssr["sex"]["bull_share"])
 
     bull_share_cow = cow_trad * trad_bull + cow_sex * sex_bull
     bull_share_heif = heif_trad * trad_bull + heif_sex * sex_bull
@@ -701,15 +772,8 @@ def _apply_expected_calving_prob_fallback(
     exp_bulls = (exp_cow + exp_unk) * bull_share_cow + exp_heif * bull_share_heif
     exp_heifers = exp_total - exp_bulls
 
-    out["Ожидаемые бычки (условно)"] = float(exp_bulls)
-    out["Ожидаемые тёлочки (условно)"] = float(exp_heifers)
-
-
-from datetime import date
-from typing import Dict, Optional
-
-import pandas as pd
-
+    out["Ожидаемые бычки"] = float(exp_bulls)
+    out["Ожидаемые тёлочки"] = float(exp_heifers)
 
 def compute_forecast_from_db(
     target_date: date,
@@ -759,8 +823,8 @@ def compute_forecast_from_db(
                         "Ожидаемый отёл, всего",
                         "Ожидаемый отёл, из них коров",
                         "Ожидаемый отёл, из них нетелей",
-                        "Ожидаемые бычки (условно)",
-                        "Ожидаемые тёлочки (условно)",
+                        "Ожидаемые бычки",
+                        "Ожидаемые тёлочки",
                     ):
                         if k in out:
                             out[k] = float(_safe_float(out.get(k), 0.0) * scale)
@@ -773,8 +837,8 @@ def compute_forecast_from_db(
         "Ожидаемый отёл, всего",
         "Ожидаемый отёл, из них коров",
         "Ожидаемый отёл, из них нетелей",
-        "Ожидаемые бычки (условно)",
-        "Ожидаемые тёлочки (условно)",
+        "Ожидаемые бычки",
+        "Ожидаемые тёлочки",
     ]
     for k in keys:
         if k in out:
@@ -790,15 +854,15 @@ def compute_forecast_from_db(
             sex_shares = _historical_calf_sex_shares(d_end_ts.date(), overrides or {}, as_of_date)
             if sex_shares is not None:
                 bull_share, heif_share = sex_shares
-                out["Ожидаемые бычки (условно)"] = round(total_calv * bull_share, 1)
-                out["Ожидаемые тёлочки (условно)"] = round(total_calv * heif_share, 1)
+                out["Ожидаемые бычки"] = round(total_calv * bull_share, 1)
+                out["Ожидаемые тёлочки"] = round(total_calv * heif_share, 1)
     except Exception:
         pass
 
                                                                                    
     try:
         calf_factor = _calf_count_factor(d_end_ts.date(), overrides or {}, as_of_date)
-        for k in ("Ожидаемые бычки (условно)", "Ожидаемые тёлочки (условно)"):
+        for k in ("Ожидаемые бычки", "Ожидаемые тёлочки"):
             if k in out:
                 out[k] = round(_safe_float(out.get(k), 0.0) * calf_factor, 1)
     except Exception:
@@ -810,8 +874,8 @@ def compute_forecast_from_db(
             "Ожидаемый отёл, всего",
             "Ожидаемый отёл, из них коров",
             "Ожидаемый отёл, из них нетелей",
-            "Ожидаемые бычки (условно)",
-            "Ожидаемые тёлочки (условно)",
+            "Ожидаемые бычки",
+            "Ожидаемые тёлочки",
         ]
         for k in keys:
             if k in out:
@@ -830,8 +894,8 @@ def compute_forecast_from_db(
                 "Ожидаемый отёл, всего",
                 "Ожидаемый отёл, из них коров",
                 "Ожидаемый отёл, из них нетелей",
-                "Ожидаемые бычки (условно)",
-                "Ожидаемые тёлочки (условно)",
+                "Ожидаемые бычки",
+                "Ожидаемые тёлочки",
             ):
                 if k in out:
                     out[k] = round(_safe_float(out.get(k), 0.0) * scale, 1)
@@ -845,8 +909,8 @@ def compute_forecast_from_db(
             "Ожидаемый отёл, всего",
             "Ожидаемый отёл, из них коров",
             "Ожидаемый отёл, из них нетелей",
-            "Ожидаемые бычки (условно)",
-            "Ожидаемые тёлочки (условно)",
+            "Ожидаемые бычки",
+            "Ожидаемые тёлочки",
         ]
         for k in keys:
             if k in out:
@@ -866,8 +930,8 @@ def compute_forecast_from_db(
                 "Ожидаемый отёл, всего",
                 "Ожидаемый отёл, из них коров",
                 "Ожидаемый отёл, из них нетелей",
-                "Ожидаемые бычки (условно)",
-                "Ожидаемые тёлочки (условно)",
+                "Ожидаемые бычки",
+                "Ожидаемые тёлочки",
             ):
                 if k in out:
                     out[k] = round(_safe_float(out.get(k), 0.0) * scale, 1)

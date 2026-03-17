@@ -165,7 +165,7 @@ def _fallback_disposals(df_raw: pd.DataFrame) -> pd.DataFrame:
 def _basic_stats(df: pd.DataFrame, date_col: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"rows": int(len(df))}
     if date_col in df.columns:
-        d = pd.to_datetime(df[date_col], errors="coerce")
+        d = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
         out["min_date"] = None if d.dropna().empty else d.min().date()
         out["max_date"] = None if d.dropna().empty else d.max().date()
     return out
@@ -211,9 +211,9 @@ def render_tab3_data() -> None:
 
         calv_df = calv_df.copy()
         if "event_date" in calv_df.columns:
-            calv_df["event_date"] = pd.to_datetime(calv_df["event_date"], errors="coerce").dt.normalize()
+            calv_df["event_date"] = pd.to_datetime(calv_df["event_date"], errors="coerce", dayfirst=True).dt.normalize()
         if "birth_date" in calv_df.columns:
-            calv_df["birth_date"] = pd.to_datetime(calv_df["birth_date"], errors="coerce").dt.normalize()
+            calv_df["birth_date"] = pd.to_datetime(calv_df["birth_date"], errors="coerce", dayfirst=True).dt.normalize()
         calv_df["reg"] = calv_df.get("reg", "").map(_norm_id)
         calv_df["mother_reg"] = calv_df.get("mother_reg", "").map(_norm_id)
         calv_df["event_type"] = calv_df.get("event_type", "").map(_norm_event_type)
@@ -233,7 +233,7 @@ def render_tab3_data() -> None:
         ins_df = ins_df.copy()
         ins_df["reg"] = ins_df.get("reg", "").map(_norm_id)
         if "event_date" in ins_df.columns:
-            ins_df["event_date"] = pd.to_datetime(ins_df["event_date"], errors="coerce").dt.normalize()
+            ins_df["event_date"] = pd.to_datetime(ins_df["event_date"], errors="coerce", dayfirst=True).dt.normalize()
         if "bull" in ins_df.columns:
             ins_df["bull"] = ins_df["bull"].map(_norm_id)
         st_ok = _basic_stats(ins_df, "event_date")
@@ -249,7 +249,7 @@ def render_tab3_data() -> None:
         disp_df = disp_df.copy()
         disp_df["reg"] = disp_df.get("reg", "").map(_norm_id)
         if "event_date" in disp_df.columns:
-            disp_df["event_date"] = pd.to_datetime(disp_df["event_date"], errors="coerce").dt.normalize()
+            disp_df["event_date"] = pd.to_datetime(disp_df["event_date"], errors="coerce", dayfirst=True).dt.normalize()
         st_ok = _basic_stats(disp_df, "event_date")
         _preview_block("Выбытие → disposals_raw", disp_df, st_ok)
 

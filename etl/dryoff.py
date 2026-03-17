@@ -189,7 +189,7 @@ def read_dryoff_excel(path_or_buffer, include_meta: bool = False) -> pd.DataFram
 
 def _parse_date_series(s: pd.Series) -> pd.Series:
     """Безопасно парсит даты, ошибки → NaT."""
-    return pd.to_datetime(s, errors="coerce").dt.date
+    return pd.to_datetime(s, errors="coerce", dayfirst=True).dt.date
 
 
 def clean_dryoff(df: pd.DataFrame) -> pd.DataFrame:
