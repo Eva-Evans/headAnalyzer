@@ -1,12 +1,10 @@
 # db_cloud.py
 import os
-import sqlite3
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 # Всегда используем SQLite на Streamlit Cloud
-# PostgreSQL оставляем только для локального запуска через Docker
-USE_SQLITE = True  # Принудительно включаем SQLite для облака
+USE_SQLITE = True
 
 if USE_SQLITE:
     # SQLite для облака
@@ -24,7 +22,7 @@ if USE_SQLITE:
         """Создаёт таблицы, если их нет"""
         with engine.connect() as conn:
             # Таблица отёлов
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS calvings_births_raw (
                     reg TEXT,
                     mother_reg TEXT,
@@ -41,10 +39,10 @@ if USE_SQLITE:
                     protocol TEXT,
                     technician TEXT
                 )
-            """)
+            """))
             
             # Таблица осеменений
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS inseminations_raw (
                     id INTEGER,
                     reg TEXT,
@@ -58,10 +56,10 @@ if USE_SQLITE:
                     insemination_type TEXT,
                     technician TEXT
                 )
-            """)
+            """))
             
             # Таблица запусков
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS dryoff_raw (
                     id INTEGER,
                     reg TEXT,
@@ -77,10 +75,10 @@ if USE_SQLITE:
                     protocols TEXT,
                     technician TEXT
                 )
-            """)
+            """))
             
             # Таблица выбытий
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS disposals_raw (
                     id INTEGER,
                     reg TEXT,
@@ -93,10 +91,10 @@ if USE_SQLITE:
                     event_date TIMESTAMP,
                     note TEXT
                 )
-            """)
+            """))
             
             # Таблица быков
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS bulls_raw (
                     bull_code TEXT,
                     short_name TEXT,
@@ -106,16 +104,16 @@ if USE_SQLITE:
                     breed TEXT,
                     bull_type TEXT
                 )
-            """)
+            """))
             
             # Таблица кэша параметров
-            conn.execute("""
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS model_params_cache (
                     signature TEXT PRIMARY KEY,
                     params_json TEXT,
                     updated_at TIMESTAMP
                 )
-            """)
+            """))
             
             conn.commit()
             print("Database initialized successfully")

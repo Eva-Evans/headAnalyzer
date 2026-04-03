@@ -445,28 +445,16 @@ def _get_db_signature() -> str:
 
 
 def _ensure_params_cache_table() -> None:
-    q = """
-    CREATE TABLE IF NOT EXISTS model_params_cache (
-        signature TEXT PRIMARY KEY,
-        params_json TEXT NOT NULL,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    """
+    q = text("""
+        CREATE TABLE IF NOT EXISTS model_params_cache (
+            signature TEXT PRIMARY KEY,
+            params_json TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     with engine.connect() as conn:
-        conn.execute(text(q))
+        conn.execute(q)
         conn.commit()
-
-
-#def _ensure_params_cache_table() -> None:
- #   q = """
- #   """CREATE TABLE IF NOT EXISTS model_params_cache (
-  #      signature TEXT PRIMARY KEY,
- #       params_json JSONB NOT NULL,
- #       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-  #  );"""
-  #  """
- #   with engine.begin() as conn:
-  #      conn.execute(text(q))"""
 
 
 def _load_params_from_db_cache(sig: str) -> Optional[Dict[str, Any]]:
