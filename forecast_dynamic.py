@@ -7,7 +7,9 @@ from typing import Dict, Tuple, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from db import engine
+#from db import engine
+from db_cloud import engine
+
 from model_params import (
     GESTATION_DAYS,
     DRY_DAYS,

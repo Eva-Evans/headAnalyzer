@@ -5,7 +5,8 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-from db import engine
+#from db import engine
+from db_cloud import engine
 import model_params as mp
 
 # важно: этот импорт должен начать работать после шага (2)

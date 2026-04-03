@@ -7,7 +7,8 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 
-from db import engine
+#from db import engine
+from db_cloud import engine
 from model_params import (
     CONCEPTION_PARAMS as DEFAULT_CONCEPTION_PARAMS,
     GESTATION_DAYS as DEFAULT_GESTATION_DAYS,

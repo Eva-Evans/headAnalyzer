@@ -13,7 +13,10 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from db import engine
+#from db import engine
+from db_cloud import engine
+
+
 from forecast import compute_forecast_from_db
 
 from etl.bulls import read_bulls_txt, load_bulls_to_db
