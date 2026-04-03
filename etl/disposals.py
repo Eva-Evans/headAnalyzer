@@ -1,8 +1,8 @@
 # etl/disposals.py
 import pandas as pd
 
-from db import engine
-
+#from db import engine
+from db_cloud import engine
 # соответствие  заголовков и названий в БД
 COLUMN_MAP = {
     "ID": "id",

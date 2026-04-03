@@ -1,7 +1,7 @@
 import pandas as pd
 
-from db import engine
-
+#from db import engine
+from db_cloud import engine
 # маппинг заголовков Excel → названия колонок в БД
 COLUMN_MAP = {
     "ID": "id",

@@ -4,7 +4,8 @@ from __future__ import annotations
 import pandas as pd
 from typing import Dict
 
-from db import engine
+#from db import engine
+from db_cloud import engine
 
 TABLE_NAME = "inseminations_raw"
 
